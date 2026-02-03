@@ -1,0 +1,23 @@
+{
+  "listen_ip": "0.0.0.0",
+  "listen_port": 6600,
+  "device_id": "",
+  "data_dir": "data",
+  "split_minutes": 1,
+  "compress": true,
+  "enable_ack": true,
+  "write_raw_hl7": true,
+  "write_events": true,
+  "write_waveforms": true,
+  "ack_app": "RECV",
+  "ack_facility": "RECV",
+  "upload": {
+    "enabled": false,
+    "base_url": "http://127.0.0.1:10000",
+    "delete_after_upload": false,
+    "timeout_seconds": 15,
+    "retry_seconds": 30,
+    "min_age_seconds": 120,
+    "run_in_background": true
+  }
+}
