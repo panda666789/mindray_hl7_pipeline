@@ -11,8 +11,15 @@ import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
-MLLP_START = b"\x0b"
-MLLP_END = b"\x1c\x0d"
+from hl7_parser import (
+    MLLP_START, MLLP_END, UNIT_MAP,
+    parse_hl7_timestamp, safe_unit, extract_device_id,
+    parse_obs_id, decode_mllp_frames, build_ack,
+    process_oru_r01, process_oru_r40,
+)
+from log_config import setup_logger
+
+logger = setup_logger("collector")
 
 DEFAULT_CONFIG = {
     "listen_ip": "0.0.0.0",
@@ -36,16 +43,8 @@ DEFAULT_CONFIG = {
     }
 }
 
-UNIT_MAP = {
-    "MDC_DIM_MILLI_VOLT": "mV",
-    "MDC_DIM_DIMLESS": "1",
-    "MDC_DIM_HZ": "Hz",
-}
-
-
 def log(msg: str) -> None:
-    ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {msg}", flush=True)
+    logger.info(msg)
 
 
 def load_config(path: str) -> Dict:
@@ -62,78 +61,9 @@ def load_config(path: str) -> Dict:
     return cfg
 
 
-def parse_hl7_timestamp(s: str) -> Optional[dt.datetime]:
-    if not s:
-        return None
-    m = re.match(r"^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{0,4})([+-]\d{4})?$", s)
-    if not m:
-        return None
-    year, mon, day, hh, mm, ss, frac, tz = m.groups()
-    micro = 0
-    if frac:
-        if len(frac) <= 3:
-            micro = int(frac.ljust(3, "0")) * 1000
-        else:
-            micro = int(frac.ljust(6, "0")[:6])
-    tzinfo = None
-    if tz:
-        sign = 1 if tz[0] == "+" else -1
-        tzh = int(tz[1:3])
-        tzm = int(tz[3:5])
-        offset = sign * (tzh * 60 + tzm)
-        tzinfo = dt.timezone(dt.timedelta(minutes=offset))
-    try:
-        return dt.datetime(int(year), int(mon), int(day), int(hh), int(mm), int(ss), micro, tzinfo=tzinfo)
-    except Exception:
-        return None
-
-
 def bucket_time(ts: dt.datetime, minutes: int) -> dt.datetime:
     minute = ts.minute - (ts.minute % minutes)
     return ts.replace(minute=minute, second=0, microsecond=0)
-
-
-def safe_unit(units_field: str) -> str:
-    parts = units_field.split("^") if units_field else []
-    if len(parts) >= 2:
-        return UNIT_MAP.get(parts[1], parts[1])
-    return ""
-
-
-def extract_device_id(msh3: str) -> str:
-    if not msh3:
-        return ""
-    parts = msh3.split("^")
-    for p in parts:
-        if re.fullmatch(r"[0-9A-Fa-f]{12}", p):
-            return p.upper()
-    return ""
-
-
-def parse_obs_id(obs_id: str) -> Tuple[str, str]:
-    parts = obs_id.split("^") if obs_id else []
-    code = parts[0] if len(parts) > 0 else ""
-    name = parts[1] if len(parts) > 1 else ""
-    return code, name
-
-
-def decode_mllp_frames(data: bytes, buffer: bytearray) -> List[bytes]:
-    buffer.extend(data)
-    frames = []
-    while True:
-        start = buffer.find(MLLP_START)
-        if start < 0:
-            buffer.clear()
-            break
-        end = buffer.find(MLLP_END, start + 1)
-        if end < 0:
-            if start > 0:
-                del buffer[:start]
-            break
-        frame = bytes(buffer[start + 1:end])
-        del buffer[:end + 2]
-        frames.append(frame)
-    return frames
 
 
 class CsvWriter:
@@ -230,109 +160,6 @@ def write_raw_hl7(base_dir: str, bucket: dt.datetime, device_id: str, msg: str, 
     fp.write(msg)
     fp.write("\n\n")
     fp.close()
-
-
-def build_ack(msg_text: str, ack_app: str, ack_fac: str) -> bytes:
-    segs = msg_text.split("\r")
-    msh = segs[0].split("|") if segs else []
-    send_app = msh[2] if len(msh) > 2 else ""
-    send_fac = msh[3] if len(msh) > 3 else ""
-    msg_id = msh[9] if len(msh) > 9 else ""
-    ver = msh[11] if len(msh) > 11 else "2.6"
-    ts = dt.datetime.now().strftime("%Y%m%d%H%M%S")
-    ack = f"MSH|^~\\&|{ack_app}|{ack_fac}|{send_app}|{send_fac}|{ts}||ACK|{msg_id}-ACK|P|{ver}\rMSA|AA|{msg_id}\r"
-    b = ack.encode("utf-8")
-    return MLLP_START + b + MLLP_END
-
-
-def process_oru_r01(segments: List[str]) -> Tuple[Optional[dt.datetime], Optional[dt.datetime], List[Dict]]:
-    obr_start = None
-    obr_end = None
-    for seg in segments:
-        if seg.startswith("OBR|"):
-            fields = seg.split("|")
-            if len(fields) > 7:
-                obr_start = parse_hl7_timestamp(fields[7])
-            if len(fields) > 8:
-                obr_end = parse_hl7_timestamp(fields[8])
-            break
-
-    channels: List[Dict] = []
-    current = None
-    for seg in segments:
-        if not seg.startswith("OBX|"):
-            continue
-        fields = seg.split("|")
-        if len(fields) < 6:
-            continue
-        value_type = fields[2]
-        obs_id = fields[3]
-        obs_code, obs_name = parse_obs_id(obs_id)
-        value = fields[5]
-        units = fields[6] if len(fields) > 6 else ""
-        if value_type == "NA":
-            current = {
-                "channel_code": obs_name or obs_code,
-                "channel_name": obs_name,
-                "samples": value,
-                "sample_rate": None,
-                "resolution": None,
-                "unit": "",
-                "inop": "",
-            }
-            channels.append(current)
-        else:
-            if current is None:
-                continue
-            if obs_code == "0" and "MDC_ATTR_SAMP_RATE" in obs_id:
-                try:
-                    current["sample_rate"] = float(value)
-                except Exception:
-                    current["sample_rate"] = None
-            elif obs_code == "2327" and "MDC_ATTR_NU_MSMT_RES" in obs_id:
-                try:
-                    current["resolution"] = float(value)
-                except Exception:
-                    current["resolution"] = None
-                current["unit"] = safe_unit(units)
-            elif obs_code == "196660" and "MDC_EVT_INOP" in obs_id:
-                current["inop"] = value
-    return obr_start, obr_end, channels
-
-
-def process_oru_r40(segments: List[str]) -> Dict:
-    event = {
-        "event_code": "",
-        "event_name": "",
-        "event_phase": "",
-        "alarm_state": "",
-        "priority": "",
-        "timestamp": None,
-    }
-    for seg in segments:
-        if not seg.startswith("OBX|"):
-            continue
-        fields = seg.split("|")
-        if len(fields) < 6:
-            continue
-        obs_id = fields[3]
-        obs_code, _ = parse_obs_id(obs_id)
-        value = fields[5]
-        if obs_code == "196616":
-            vcode, vname = parse_obs_id(value)
-            event["event_code"] = vcode
-            event["event_name"] = vname
-            if len(fields) > 14:
-                ts = parse_hl7_timestamp(fields[14])
-                if ts:
-                    event["timestamp"] = ts
-        elif obs_code == "68481":
-            event["event_phase"] = value
-        elif obs_code == "68482":
-            event["alarm_state"] = value
-        elif obs_code == "68484":
-            event["priority"] = value
-    return event
 
 
 def run_server(cfg: Dict):

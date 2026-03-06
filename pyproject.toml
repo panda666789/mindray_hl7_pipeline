@@ -1,0 +1,9 @@
+[project]
+name = "mindray-hl7-pipeline"
+version = "1.0.0"
+description = "Mindray HL7 medical data acquisition system"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["apps/client"]

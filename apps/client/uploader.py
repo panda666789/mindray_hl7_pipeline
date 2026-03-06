@@ -24,8 +24,12 @@ def iter_files(base_dir: str) -> Iterable[Tuple[str, str]]:
             yield path, rel
 
 
-def upload_one(base_url: str, path: str, rel: str, kind: str, device_id: str, timeout: int) -> bool:
+def upload_one(base_url: str, path: str, rel: str, kind: str, device_id: str,
+               timeout: int, api_key: str = "") -> bool:
     url = base_url.rstrip("/") + "/upload"
+    headers = {}
+    if api_key:
+        headers["X-Api-Key"] = api_key
     with open(path, "rb") as f:
         files = {"file": (os.path.basename(path), f)}
         data = {
@@ -33,7 +37,7 @@ def upload_one(base_url: str, path: str, rel: str, kind: str, device_id: str, ti
             "device_id": device_id,
             "relative_path": rel.replace("\\", "/"),
         }
-        resp = requests.post(url, data=data, files=files, timeout=timeout)
+        resp = requests.post(url, data=data, files=files, headers=headers, timeout=timeout)
     return resp.status_code == 200
 
 
@@ -45,6 +49,7 @@ def run_uploader(cfg: Dict, once: bool = False, log_fn: Callable[[str], None] = 
     timeout = int(upload.get("timeout_seconds", 15))
     retry = int(upload.get("retry_seconds", 30))
     min_age = int(upload.get("min_age_seconds", 120))
+    api_key = upload.get("api_key", "")
     data_dir = cfg.get("data_dir", "data")
     device_id = cfg.get("device_id", "")
 
@@ -65,7 +70,7 @@ def run_uploader(cfg: Dict, once: bool = False, log_fn: Callable[[str], None] = 
             if now - mtime < min_age:
                 continue
             kind = rel.split(os.sep, 1)[0]
-            ok = upload_one(base_url, path, rel, kind, device_id, timeout)
+            ok = upload_one(base_url, path, rel, kind, device_id, timeout, api_key)
             if ok:
                 log_fn(f"uploaded {rel}")
             if ok and delete_after:

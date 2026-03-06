@@ -4,12 +4,19 @@ import os
 import shutil
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 
 
 DATA_DIR = os.environ.get("DATA_DIR", "data")
+API_KEY = os.environ.get("API_KEY", "")
 
 app = FastAPI(title="Mindray HL7 Ingest", version="0.1.0")
+
+
+def _check_api_key(x_api_key: Optional[str] = Header(None)):
+    if API_KEY and x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="invalid or missing API key")
+    return x_api_key
 
 
 def _safe_relative_path(rel_path: str) -> str:
@@ -43,6 +50,7 @@ async def upload(
     file: UploadFile = File(...),
     device_id: str = Form(""),
     relative_path: str = Form(""),
+    _key: str = Depends(_check_api_key),
 ):
     now = dt.datetime.now()
     if relative_path:
