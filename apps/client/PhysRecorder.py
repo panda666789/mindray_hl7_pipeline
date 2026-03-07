@@ -2096,25 +2096,21 @@ class SensorApp(tk.Tk):
         self.duration.insert(0, "0")
         self.duration.grid(row=0, column=5, padx=5)
         
-        # 控制按钮
+        # 控制按钮（第二行）
         self.btn_toggle = ttk.Button(control_frame, text="开始采集", command=self.toggle_recording)
-        self.btn_toggle.grid(row=0, column=6, padx=10)
+        self.btn_toggle.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
 
-        # 标签工具按钮
         self.label_btn = ttk.Button(control_frame, text="标签工具", command=self.toggle_label_window)
-        self.label_btn.grid(row=0, column=7, padx=10)
-        
-        # 视频播放按钮
-        self.video_btn = ttk.Button(control_frame, text="播放视频", command=self.show_video_list)
-        self.video_btn.grid(row=0, column=8, padx=10)
-        
-        # HUB预览按钮 (新增)
-        self.hub_preview_btn = ttk.Button(control_frame, text="HUB预览", command=self.show_hub_preview)
-        self.hub_preview_btn.grid(row=0, column=9, padx=10)
+        self.label_btn.grid(row=1, column=2, padx=5, pady=5)
 
-        # 上传按钮
+        self.video_btn = ttk.Button(control_frame, text="播放视频", command=self.show_video_list)
+        self.video_btn.grid(row=1, column=3, padx=5, pady=5)
+
+        self.hub_preview_btn = ttk.Button(control_frame, text="HUB预览", command=self.show_hub_preview)
+        self.hub_preview_btn.grid(row=1, column=4, padx=5, pady=5)
+
         self.btn_upload = ttk.Button(control_frame, text="上传数据", command=self.toggle_upload)
-        self.btn_upload.grid(row=0, column=10, padx=10)
+        self.btn_upload.grid(row=1, column=5, padx=5, pady=5)
         self._upload_thread = None
         self._uploading = False
 
