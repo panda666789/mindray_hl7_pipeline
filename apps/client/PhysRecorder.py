@@ -2527,7 +2527,7 @@ class SensorApp(tk.Tk):
                 return
             
             # 创建存储路径
-            base_path = os.path.join(self.subject_id.get(), self.video_num.get())
+            base_path = os.path.join('data', self.subject_id.get(), self.video_num.get())
             try:
                 os.makedirs(base_path)
             except Exception as e:
