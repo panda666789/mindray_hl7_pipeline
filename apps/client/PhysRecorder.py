@@ -514,7 +514,7 @@ class MindrayHL7:
                                     self.device_id = dev_id
 
                                 if msg_type.startswith('ORU^R01'):
-                                    obr_start, obr_end, chs = process_oru_r01(segments)
+                                    obr_start, obr_end, chs, nums = process_oru_r01(segments)
                                     for ch in chs:
                                         ch_code = ch.get('channel_code', 'UNKNOWN')
                                         self.channels.add(ch_code)
@@ -533,6 +533,18 @@ class MindrayHL7:
                                             'end_time': obr_end.isoformat() if obr_end else '',
                                         }, t)
 
+                                        self.preview.append(entry)
+                                        self.buf.append(entry)
+                                        self.lock.release()
+
+                                    for nm in nums:
+                                        entry = ('numeric', {
+                                            'code': nm.get('code', ''),
+                                            'name': nm.get('name', ''),
+                                            'value': nm.get('value'),
+                                            'unit': nm.get('unit', ''),
+                                            'timestamp': obr_start.isoformat() if obr_start else '',
+                                        }, t)
                                         self.preview.append(entry)
                                         self.buf.append(entry)
                                         self.lock.release()
@@ -597,14 +609,17 @@ class MindrayHL7:
         def _record():
             waveform_path = ufile(f'{self.path}/waveforms.csv')
             event_path = ufile(f'{self.path}/events.csv')
+            numerics_path = ufile(f'{self.path}/vitals.csv')
 
             with open(waveform_path, 'a') as fwave, \
-                 open(event_path, 'a') as fevent:
+                 open(event_path, 'a') as fevent, \
+                 open(numerics_path, 'a') as fnums:
                 fwave.write('timestamp,device_id,channel_code,channel_name,'
                             'start_time,end_time,sample_rate,resolution,'
                             'unit,samples,samples_count,inop\n')
                 fevent.write('timestamp,device_id,event_code,event_name,'
                              'event_phase,alarm_state,priority,event_timestamp\n')
+                fnums.write('timestamp,device_id,code,name,value,unit\n')
 
                 while self.recording:
                     self.lock.acquire()
@@ -638,6 +653,15 @@ class MindrayHL7:
                                      f"{data['priority']},"
                                      f"{data['timestamp']}\n")
                         fevent.flush()
+
+                    elif dtype == 'numeric':
+                        val = data.get('value')
+                        fnums.write(f"{t},{self.device_id},"
+                                    f"{data['code']},"
+                                    f"{data['name']},"
+                                    f"{val if val is not None else ''},"
+                                    f"{data.get('unit', '')}\n")
+                        fnums.flush()
 
         Thread(target=_record, daemon=True).start()
 

@@ -104,6 +104,8 @@ class WriterManager:
             name = f"{device_id}_{ts}_{channel}{ext}"
         elif kind == "events_csv":
             name = f"{device_id}_{ts}_alarm{ext}"
+        elif kind == "numerics_csv":
+            name = f"{device_id}_{ts}_vitals{ext}"
         else:
             name = f"{device_id}_{ts}{ext}"
         return os.path.join(base, name)
@@ -133,6 +135,14 @@ class WriterManager:
         if key not in self.open_files:
             path = self._path("events_csv", bucket, device_id)
             header = ["device_id", "event_code", "event_name", "event_phase", "alarm_state", "priority", "timestamp"]
+            self.open_files[key] = CsvWriter(path, header, self.compress)
+        return self.open_files[key]
+
+    def get_numerics_writer(self, bucket: dt.datetime, device_id: str) -> CsvWriter:
+        key = ("numerics", bucket, device_id)
+        if key not in self.open_files:
+            path = self._path("numerics_csv", bucket, device_id)
+            header = ["device_id", "timestamp", "code", "name", "value", "unit"]
             self.open_files[key] = CsvWriter(path, header, self.compress)
         return self.open_files[key]
 
@@ -211,7 +221,7 @@ def run_server(cfg: Dict):
                         write_raw_hl7(base_dir, bucket, device_id, msg_text, compress)
 
                     if msg_type.startswith("ORU^R01") and cfg.get("write_waveforms", True):
-                        obr_start, obr_end, channels = process_oru_r01(segments)
+                        obr_start, obr_end, channels, numerics = process_oru_r01(segments)
                         if obr_start is None:
                             obr_start = msg_time
                         if obr_end is None:
@@ -234,6 +244,18 @@ def run_server(cfg: Dict):
                                 samples_count,
                                 ch.get("inop", ""),
                             ])
+                        if numerics:
+                            ts_iso = obr_start.isoformat()
+                            writer = writer_mgr.get_numerics_writer(bucket, device_id)
+                            for nm in numerics:
+                                writer.write_row([
+                                    device_id,
+                                    ts_iso,
+                                    nm.get("code", ""),
+                                    nm.get("name", ""),
+                                    nm.get("value") if nm.get("value") is not None else "",
+                                    nm.get("unit", ""),
+                                ])
 
                     if msg_type.startswith("ORU^R40") and cfg.get("write_events", True):
                         event = process_oru_r40(segments)

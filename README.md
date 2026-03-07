@@ -66,7 +66,7 @@ mindray_hl7_pipeline/
 │   ├── run_collector.bat        # 启动 CLI（自动重启）
 │   └── verify_install.py        # 安装检查
 ├── tests/
-│   └── test_hl7_parser.py       # 单元测试（37个）
+│   └── test_hl7_parser.py       # 单元测试（38个）
 ├── docs/
 │   ├── DEPLOYMENT_GUIDE.md      # 超详细部署手册
 │   ├── HANDOVER.md              # 接手要点
@@ -150,6 +150,7 @@ data/
   raw_hl7/YYYY/MM/DD/HH/<device>_YYYYMMDD_HHMM.hl7(.gz)
   waveform_csv/YYYY/MM/DD/HH/<device>_YYYYMMDD_HHMM_<channel>.csv(.gz)
   events_csv/YYYY/MM/DD/HH/<device>_YYYYMMDD_HHMM_alarm.csv(.gz)
+  numerics_csv/YYYY/MM/DD/HH/<device>_YYYYMMDD_HHMM_vitals.csv(.gz)
 ```
 
 ### 6. CSV 字段（波形）
@@ -167,7 +168,18 @@ data/
 | samples_count | 采样点数 |
 | inop | 异常标记（如 32767 = 导联脱落） |
 
-### 7. CSV 字段（事件）
+### 7. CSV 字段（生命体征数值）
+
+| 字段 | 说明 |
+|------|------|
+| device_id | 设备 MAC |
+| timestamp | 时间戳（ISO 格式） |
+| code | MDC 代码，如 `147842` |
+| name | 参数名称，如 `MDC_ECG_HEART_RATE` |
+| value | 数值（HR、SpO2、RR、血压、体温等） |
+| unit | 单位 |
+
+### 8. CSV 字段（事件）
 
 `device_id, event_code, event_name, event_phase, alarm_state, priority, timestamp`
 
@@ -293,7 +305,7 @@ python apps\client\uploader.py --config configs\client_config.json
 pytest tests/ -v
 ```
 
-覆盖 HL7 时间戳解析、单位映射、设备 ID 提取、MLLP 帧解码、ACK 构建、波形/事件解析，共 37 个用例。
+覆盖 HL7 时间戳解析、单位映射、设备 ID 提取、MLLP 帧解码、ACK 构建、波形/数值参数/事件解析，共 38 个用例。
 
 ---
 

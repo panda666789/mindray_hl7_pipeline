@@ -1,3 +1,0 @@
-device_id,event_code,event_name,event_phase,alarm_state,priority,timestamp
-00A037000000,196680,MDC_EVT_LEAD_OFF,start,active,PL,2026-01-24T12:47:38+08:00
-00A037000000,202834,MDC_EVT_STAT_OFF,start,active,PN,2026-01-24T12:47:38+08:00

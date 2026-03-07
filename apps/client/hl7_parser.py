@@ -129,8 +129,8 @@ def build_ack(msg_text: str, ack_app: str, ack_fac: str) -> bytes:
 # ORU message processors
 # ---------------------------------------------------------------------------
 
-def process_oru_r01(segments: List[str]) -> Tuple[Optional[dt.datetime], Optional[dt.datetime], List[Dict]]:
-    """Parse an ORU^R01 (waveform) message and return (start, end, channels)."""
+def process_oru_r01(segments: List[str]) -> Tuple[Optional[dt.datetime], Optional[dt.datetime], List[Dict], List[Dict]]:
+    """Parse an ORU^R01 (waveform) message and return (start, end, channels, numerics)."""
     obr_start = None
     obr_end = None
     for seg in segments:
@@ -143,6 +143,7 @@ def process_oru_r01(segments: List[str]) -> Tuple[Optional[dt.datetime], Optiona
             break
 
     channels: List[Dict] = []
+    numerics: List[Dict] = []
     current = None
     for seg in segments:
         if not seg.startswith("OBX|"):
@@ -166,9 +167,7 @@ def process_oru_r01(segments: List[str]) -> Tuple[Optional[dt.datetime], Optiona
                 "inop": "",
             }
             channels.append(current)
-        else:
-            if current is None:
-                continue
+        elif value_type == "NM" and current is not None:
             if obs_code == "0" and "MDC_ATTR_SAMP_RATE" in obs_id:
                 try:
                     current["sample_rate"] = float(value)
@@ -182,7 +181,22 @@ def process_oru_r01(segments: List[str]) -> Tuple[Optional[dt.datetime], Optiona
                 current["unit"] = safe_unit(units)
             elif obs_code == "196660" and "MDC_EVT_INOP" in obs_id:
                 current["inop"] = value
-    return obr_start, obr_end, channels
+        elif value_type == "NM" and current is None:
+            # Standalone numeric vital sign parameter
+            try:
+                num_value = float(value)
+            except (ValueError, TypeError):
+                num_value = None
+            numerics.append({
+                "code": obs_code,
+                "name": obs_name or obs_code,
+                "value": num_value,
+                "unit": safe_unit(units),
+            })
+        elif value_type == "ST" and current is not None:
+            if obs_code == "196660" and "MDC_EVT_INOP" in obs_id:
+                current["inop"] = value
+    return obr_start, obr_end, channels, numerics
 
 
 def process_oru_r40(segments: List[str]) -> Dict:

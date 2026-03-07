@@ -231,11 +231,12 @@ class TestProcessOruR01:
             "OBX|2|NM|0^MDC_ATTR_SAMP_RATE^MDC|1.7.6.131329.1|500|264640^MDC_DIM_HZ^MDC",
             "OBX|3|NM|2327^MDC_ATTR_NU_MSMT_RES^MDC|1.7.6.131329.2|0.001221|266418^MDC_DIM_MILLI_VOLT^MDC",
         ]
-        start, end, channels = process_oru_r01(segments)
+        start, end, channels, numerics = process_oru_r01(segments)
         assert start is not None
         assert end is not None
         assert start < end
         assert len(channels) == 1
+        assert len(numerics) == 0
         ch = channels[0]
         assert ch["channel_code"] == "MDC_ECG_ELEC_POTL_I"
         assert ch["sample_rate"] == 500.0
@@ -252,7 +253,7 @@ class TestProcessOruR01:
             "OBX|3|NA|150452^MDC_PULS_OXIM_PLETH^MDC|2|100^200",
             "OBX|4|NM|0^MDC_ATTR_SAMP_RATE^MDC|2.1|60|264640^MDC_DIM_HZ^MDC",
         ]
-        start, end, channels = process_oru_r01(segments)
+        start, end, channels, _ = process_oru_r01(segments)
         assert len(channels) == 2
         assert channels[0]["channel_code"] == "MDC_ECG_ELEC_POTL_I"
         assert channels[0]["sample_rate"] == 500.0
@@ -264,7 +265,7 @@ class TestProcessOruR01:
             "MSH|^~\\&|TEST|||20260124||ORU^R01|1|P|2.6",
             "OBR|1||1|||20260124131539000+0800|20260124131540000+0800",
         ]
-        start, end, channels = process_oru_r01(segments)
+        start, end, channels, _ = process_oru_r01(segments)
         assert start is not None
         assert len(channels) == 0
 
@@ -275,8 +276,24 @@ class TestProcessOruR01:
             "OBX|1|NA|131329^MDC_ECG_ELEC_POTL_I^MDC|1|10^20",
             "OBX|2|ST|196660^MDC_EVT_INOP^MDC|1.1|32767",
         ]
-        _, _, channels = process_oru_r01(segments)
+        _, _, channels, _ = process_oru_r01(segments)
         assert channels[0]["inop"] == "32767"
+
+
+    def test_numeric_vitals(self):
+        segments = [
+            "MSH|^~\\&|TEST|||20260124||ORU^R01|1|P|2.6",
+            "OBR|1||1|||20260124131539000+0800|20260124131540000+0800",
+            "OBX|1|NM|147842^MDC_ECG_HEART_RATE^MDC|1|72|264864^MDC_DIM_BEAT_PER_MIN^MDC",
+            "OBX|2|NM|150456^MDC_PULS_OXIM_SAT_O2^MDC|2|98|262688^MDC_DIM_PERCENT^MDC",
+        ]
+        _, _, channels, numerics = process_oru_r01(segments)
+        assert len(channels) == 0
+        assert len(numerics) == 2
+        assert numerics[0]["name"] == "MDC_ECG_HEART_RATE"
+        assert numerics[0]["value"] == 72.0
+        assert numerics[1]["name"] == "MDC_PULS_OXIM_SAT_O2"
+        assert numerics[1]["value"] == 98.0
 
 
 # ---------------------------------------------------------------------------
