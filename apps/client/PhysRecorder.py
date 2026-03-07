@@ -2580,6 +2580,7 @@ class SensorApp(tk.Tk):
 
     def toggle_upload(self):
         """切换上传状态"""
+        from tkinter import messagebox
         if self._uploading:
             self._uploading = False
             self.btn_upload.config(text="上传数据")
@@ -2590,7 +2591,6 @@ class SensorApp(tk.Tk):
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    '..', '..', 'configs', 'client_config.json')
         if not os.path.exists(config_path):
-            from tkinter import messagebox
             messagebox.showerror("错误", "未找到 configs/client_config.json")
             return
 
@@ -2599,7 +2599,6 @@ class SensorApp(tk.Tk):
 
         upload_cfg = cfg.get('upload', {})
         if not upload_cfg.get('base_url'):
-            from tkinter import messagebox
             messagebox.showerror("错误", "配置文件中 upload.base_url 为空")
             return
 
@@ -2618,6 +2617,8 @@ class SensorApp(tk.Tk):
             data_dir = 'data'
 
             logger.info("开始上传，目标: %s", base_url)
+            uploaded = []
+            failed = []
             while self._uploading:
                 now = time.time()
                 for path, rel in iter_files(data_dir):
@@ -2633,12 +2634,31 @@ class SensorApp(tk.Tk):
                     ok = upload_one(base_url, path, rel, kind, device_id, timeout, api_key)
                     if ok:
                         logger.info("已上传: %s", rel)
+                        uploaded.append(rel)
                         if delete_after:
                             try:
                                 os.remove(path)
                             except OSError:
                                 pass
-                time.sleep(retry)
+                    else:
+                        failed.append(rel)
+                # 一轮扫描完成，显示结果弹窗
+                if uploaded or failed:
+                    msg = f"上传成功: {len(uploaded)} 个文件"
+                    if failed:
+                        msg += f"\n上传失败: {len(failed)} 个文件"
+                    self.after(0, lambda m=msg: messagebox.showinfo("上传结果", m))
+                    uploaded.clear()
+                    failed.clear()
+                    self._uploading = False
+                    self.after(0, lambda: self.btn_upload.config(text="上传数据"))
+                    return
+                else:
+                    # 没有符合条件的文件
+                    self.after(0, lambda: messagebox.showinfo("上传结果", "没有需要上传的文件"))
+                    self._uploading = False
+                    self.after(0, lambda: self.btn_upload.config(text="上传数据"))
+                    return
             logger.info("上传线程退出")
 
         self._upload_thread = Thread(target=_upload_loop, daemon=True)
