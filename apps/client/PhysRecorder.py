@@ -1100,9 +1100,13 @@ class KHK11CP:
     
     def close(self):
         self.alive = False
-        
-from PyCameraList.camera_device import list_video_devices
-list_video_devices()
+
+try:
+    from PyCameraList.camera_device import list_video_devices
+    list_video_devices()
+except ImportError:
+    def list_video_devices():
+        return []
 
 def get_camera_properties(cap):
     """

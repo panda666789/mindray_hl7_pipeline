@@ -12,8 +12,8 @@
   "ack_app": "RECV",
   "ack_facility": "RECV",
   "upload": {
-    "enabled": false,
-    "base_url": "http://127.0.0.1:10000",
+    "enabled": true,
+    "base_url": "http://47.93.46.224:10000",
     "api_key": "",
     "delete_after_upload": false,
     "timeout_seconds": 15,

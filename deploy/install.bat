@@ -75,7 +75,7 @@ if not exist "%SHORTCUT%" (
 
 echo.
 echo ============================================
-echo   安装完成！
-echo   双击桌面 PhysRecorder.bat 即可启动
+echo   [OK] Install complete!
+echo   Double-click PhysRecorder.bat on Desktop
 echo ============================================
 pause
