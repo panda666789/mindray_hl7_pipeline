@@ -13,6 +13,7 @@ import serial
 import sys
 import subprocess
 import socket
+import json
 import re
 import datetime as dt
 from log_config import setup_logger
@@ -2087,6 +2088,12 @@ class SensorApp(tk.Tk):
         self.hub_preview_btn = ttk.Button(control_frame, text="HUB预览", command=self.show_hub_preview)
         self.hub_preview_btn.grid(row=0, column=9, padx=10)
 
+        # 上传按钮
+        self.btn_upload = ttk.Button(control_frame, text="上传数据", command=self.toggle_upload)
+        self.btn_upload.grid(row=0, column=10, padx=10)
+        self._upload_thread = None
+        self._uploading = False
+
         # 视频预览
         preview_frame = ttk.LabelFrame(main_frame, text="实时预览")
         preview_frame.grid(row=2, column=0, sticky="nsew", pady=5)
@@ -2570,6 +2577,72 @@ class SensorApp(tk.Tk):
                 
         self.is_recording = False
         self.btn_toggle.config(text="开始采集")
+
+    def toggle_upload(self):
+        """切换上传状态"""
+        if self._uploading:
+            self._uploading = False
+            self.btn_upload.config(text="上传数据")
+            logger.info("上传已停止")
+            return
+
+        # 加载配置
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   '..', '..', 'configs', 'client_config.json')
+        if not os.path.exists(config_path):
+            from tkinter import messagebox
+            messagebox.showerror("错误", "未找到 configs/client_config.json")
+            return
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+
+        upload_cfg = cfg.get('upload', {})
+        if not upload_cfg.get('base_url'):
+            from tkinter import messagebox
+            messagebox.showerror("错误", "配置文件中 upload.base_url 为空")
+            return
+
+        self._uploading = True
+        self.btn_upload.config(text="停止上传")
+
+        def _upload_loop():
+            from uploader import iter_files, upload_one
+            base_url = upload_cfg['base_url']
+            timeout = int(upload_cfg.get('timeout_seconds', 15))
+            retry = int(upload_cfg.get('retry_seconds', 30))
+            min_age = int(upload_cfg.get('min_age_seconds', 120))
+            delete_after = upload_cfg.get('delete_after_upload', False)
+            api_key = upload_cfg.get('api_key', '')
+            device_id = cfg.get('device_id', '')
+            data_dir = 'data'
+
+            logger.info("开始上传，目标: %s", base_url)
+            while self._uploading:
+                now = time.time()
+                for path, rel in iter_files(data_dir):
+                    if not self._uploading:
+                        break
+                    try:
+                        mtime = os.path.getmtime(path)
+                    except OSError:
+                        continue
+                    if now - mtime < min_age:
+                        continue
+                    kind = rel.split(os.sep, 1)[0]
+                    ok = upload_one(base_url, path, rel, kind, device_id, timeout, api_key)
+                    if ok:
+                        logger.info("已上传: %s", rel)
+                        if delete_after:
+                            try:
+                                os.remove(path)
+                            except OSError:
+                                pass
+                time.sleep(retry)
+            logger.info("上传线程退出")
+
+        self._upload_thread = Thread(target=_upload_loop, daemon=True)
+        self._upload_thread.start()
 
     def on_closing(self):
         """关闭窗口时清理资源"""
