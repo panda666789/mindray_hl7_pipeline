@@ -1281,6 +1281,12 @@ class Camera:
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter import Menu
+
+try:
+    import sv_ttk
+    _HAS_SV_TTK = True
+except ImportError:
+    _HAS_SV_TTK = False
 import cv2
 import os
 import time
@@ -1844,6 +1850,9 @@ class SensorApp(tk.Tk):
         super().__init__()
         self.title("多模态数据采集系统")
         self.geometry("1100x1100")
+
+        if _HAS_SV_TTK:
+            sv_ttk.set_theme("light")
         self.name_cam1 = f'{time.time()}'
         self.name_cam2 = f'{time.time()}'
         
