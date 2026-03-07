@@ -1285,8 +1285,10 @@ from tkinter import Menu
 try:
     import sv_ttk
     _HAS_SV_TTK = True
+    print("[INFO] sv-ttk loaded successfully")
 except ImportError:
     _HAS_SV_TTK = False
+    print("[WARN] sv-ttk not installed, using default theme")
 import cv2
 import os
 import time
@@ -1852,7 +1854,8 @@ class SensorApp(tk.Tk):
         self.geometry("1100x1100")
 
         if _HAS_SV_TTK:
-            sv_ttk.set_theme("light")
+            sv_ttk.set_theme("dark")
+            print("[INFO] sv-ttk dark theme applied")
         self.name_cam1 = f'{time.time()}'
         self.name_cam2 = f'{time.time()}'
         
