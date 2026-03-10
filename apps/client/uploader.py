@@ -37,7 +37,8 @@ def upload_one(base_url: str, path: str, rel: str, kind: str, device_id: str,
             "device_id": device_id,
             "relative_path": rel.replace("\\", "/"),
         }
-        resp = requests.post(url, data=data, files=files, headers=headers, timeout=timeout)
+        resp = requests.post(url, data=data, files=files, headers=headers, timeout=timeout,
+                              proxies={"http": None, "https": None})
     return resp.status_code == 200
 
 
@@ -46,7 +47,7 @@ def run_uploader(cfg: Dict, once: bool = False, log_fn: Callable[[str], None] = 
     enabled = upload.get("enabled", False)
     base_url = upload.get("base_url", "")
     delete_after = upload.get("delete_after_upload", False)
-    timeout = int(upload.get("timeout_seconds", 15))
+    timeout = int(upload.get("timeout_seconds", 60))
     retry = int(upload.get("retry_seconds", 30))
     min_age = int(upload.get("min_age_seconds", 120))
     api_key = upload.get("api_key", "")
