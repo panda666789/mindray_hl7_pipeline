@@ -2,9 +2,11 @@ import argparse
 import json
 import os
 import time
-from typing import Callable, Dict, Iterable, Tuple
+from typing import Callable, Dict, Iterable, Set, Tuple
 
 import requests
+
+MANIFEST_NAME = ".uploaded_manifest"
 
 
 def load_config(path: str) -> Dict:
@@ -12,6 +14,28 @@ def load_config(path: str) -> Dict:
         return {}
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _manifest_path(data_dir: str) -> str:
+    return os.path.join(data_dir, MANIFEST_NAME)
+
+
+def load_manifest(data_dir: str) -> Dict[str, float]:
+    """Load manifest: {relative_path: mtime_when_uploaded}."""
+    path = _manifest_path(data_dir)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_manifest(data_dir: str, manifest: Dict[str, float]) -> None:
+    path = _manifest_path(data_dir)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
 
 
 def iter_files(base_dir: str) -> Iterable[Tuple[str, str]]:
@@ -61,6 +85,8 @@ def run_uploader(cfg: Dict, once: bool = False, log_fn: Callable[[str], None] = 
         log_fn("upload.base_url missing, exit")
         return
 
+    manifest = load_manifest(data_dir)
+
     while True:
         now = time.time()
         for path, rel in iter_files(data_dir):
@@ -70,10 +96,15 @@ def run_uploader(cfg: Dict, once: bool = False, log_fn: Callable[[str], None] = 
                 continue
             if now - mtime < min_age:
                 continue
+            rel_key = rel.replace("\\", "/")
+            if rel_key in manifest and manifest[rel_key] >= mtime:
+                continue
             kind = rel.split(os.sep, 1)[0]
             ok = upload_one(base_url, path, rel, kind, device_id, timeout, api_key)
             if ok:
                 log_fn(f"uploaded {rel}")
+                manifest[rel_key] = mtime
+                save_manifest(data_dir, manifest)
             if ok and delete_after:
                 try:
                     os.remove(path)

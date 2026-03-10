@@ -2635,9 +2635,9 @@ class SensorApp(tk.Tk):
         self.btn_upload.config(text="停止上传")
 
         def _upload_loop():
-            from uploader import iter_files, upload_one
+            from uploader import iter_files, load_manifest, save_manifest, upload_one
             base_url = upload_cfg['base_url']
-            timeout = int(upload_cfg.get('timeout_seconds', 15))
+            timeout = int(upload_cfg.get('timeout_seconds', 60))
             retry = int(upload_cfg.get('retry_seconds', 30))
             min_age = int(upload_cfg.get('min_age_seconds', 120))
             delete_after = upload_cfg.get('delete_after_upload', False)
@@ -2646,8 +2646,10 @@ class SensorApp(tk.Tk):
             data_dir = 'data'
 
             logger.info("开始上传，目标: %s", base_url)
+            manifest = load_manifest(data_dir)
             uploaded = []
             failed = []
+            skipped = 0
             while self._uploading:
                 now = time.time()
                 for path, rel in iter_files(data_dir):
@@ -2659,11 +2661,17 @@ class SensorApp(tk.Tk):
                         continue
                     if now - mtime < min_age:
                         continue
+                    rel_key = rel.replace("\\", "/")
+                    if rel_key in manifest and manifest[rel_key] >= mtime:
+                        skipped += 1
+                        continue
                     kind = rel.split(os.sep, 1)[0]
                     ok = upload_one(base_url, path, rel, kind, device_id, timeout, api_key)
                     if ok:
                         logger.info("已上传: %s", rel)
                         uploaded.append(rel)
+                        manifest[rel_key] = mtime
+                        save_manifest(data_dir, manifest)
                         if delete_after:
                             try:
                                 os.remove(path)
@@ -2676,15 +2684,17 @@ class SensorApp(tk.Tk):
                     msg = f"上传成功: {len(uploaded)} 个文件"
                     if failed:
                         msg += f"\n上传失败: {len(failed)} 个文件"
+                    if skipped:
+                        msg += f"\n跳过(已上传过): {skipped} 个文件"
                     self.after(0, lambda m=msg: messagebox.showinfo("上传结果", m))
-                    uploaded.clear()
-                    failed.clear()
                     self._uploading = False
                     self.after(0, lambda: self.btn_upload.config(text="上传数据"))
                     return
                 else:
-                    # 没有符合条件的文件
-                    self.after(0, lambda: messagebox.showinfo("上传结果", "没有需要上传的文件"))
+                    msg = "没有需要上传的文件"
+                    if skipped:
+                        msg += f"\n（{skipped} 个文件之前已上传）"
+                    self.after(0, lambda m=msg: messagebox.showinfo("上传结果", m))
                     self._uploading = False
                     self.after(0, lambda: self.btn_upload.config(text="上传数据"))
                     return
