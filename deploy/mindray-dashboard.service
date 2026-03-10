@@ -1,0 +1,15 @@
+[Unit]
+Description=Mindray Data Dashboard (Streamlit)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mindray_hl7_pipeline/apps/dashboard
+Environment=DATA_DIR=/opt/mindray_hl7_pipeline/data
+ExecStart=/root/miniconda3/bin/streamlit run app.py --server.port 8501 --server.headless true
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

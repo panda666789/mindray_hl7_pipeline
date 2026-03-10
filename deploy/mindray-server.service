@@ -1,0 +1,15 @@
+[Unit]
+Description=Mindray HL7 Ingest Server (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mindray_hl7_pipeline/apps/server
+Environment=DATA_DIR=/opt/mindray_hl7_pipeline/data
+ExecStart=/opt/mindray_hl7_pipeline/.venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 10000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
