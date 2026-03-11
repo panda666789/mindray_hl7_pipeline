@@ -51,7 +51,7 @@ def iter_files(base_dir: str) -> Iterable[Tuple[str, str]]:
 def upload_one(base_url: str, path: str, rel: str, kind: str, device_id: str,
                timeout: int, api_key: str = "") -> bool:
     url = base_url.rstrip("/") + "/upload"
-    headers = {}
+    headers = {"Connection": "close"}
     if api_key:
         headers["X-Api-Key"] = api_key
     with open(path, "rb") as f:
