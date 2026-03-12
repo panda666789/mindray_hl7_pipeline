@@ -3,6 +3,10 @@ import threading
 from threading import Semaphore
 import time
 import os
+
+# 屏蔽 OpenCV 警告输出
+os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
+
 import hid
 import struct
 import asyncio
@@ -1290,57 +1294,66 @@ class Camera:
         os.makedirs(self.path, exist_ok=True)
 
         def _record():
-            # 写入元数据（只写一次）
-            with open(ufile(f'{self.path}/metadata.csv'), 'a') as f:
-                f.write('attribute,value\n')
-                for k, v in get_camera_properties(self.cap).items():
-                    f.write(f'{k},{v}\n')
-                f.write(f'bitrate_mbps,{self.bitrate_mbps}\n')
-                f.write(f'segment_duration_sec,{self.segment_duration}\n')
+            out = None
+            timestamp_file = None
+            try:
+                # 写入元数据（只写一次）
+                with open(ufile(f'{self.path}/metadata.csv'), 'a') as f:
+                    f.write('attribute,value\n')
+                    for k, v in get_camera_properties(self.cap).items():
+                        f.write(f'{k},{v}\n')
+                    f.write(f'bitrate_mbps,{self.bitrate_mbps}\n')
+                    f.write(f'segment_duration_sec,{self.segment_duration}\n')
 
-            # 初始化第一个切片
-            segment_path = f'{self.path}/video_seg{self.current_segment:03d}.avi'
-            out = cv2.VideoWriter(segment_path, self.save_codec, 30.0, self.res, isColor=not self.BW)
-            timestamp_file = open(ufile(f'{self.path}/timestamps_seg{self.current_segment:03d}.csv'), 'a')
-            timestamp_file.write('frame,timestamp,segment\n')
+                # 初始化第一个切片
+                segment_path = f'{self.path}/video_seg{self.current_segment:03d}.avi'
+                out = cv2.VideoWriter(segment_path, self.save_codec, 30.0, self.res, isColor=not self.BW)
+                timestamp_file = open(ufile(f'{self.path}/timestamps_seg{self.current_segment:03d}.csv'), 'a')
+                timestamp_file.write('frame,timestamp,segment\n')
 
-            n = 0
-            while self.recording:
-                self.lock.acquire()
-                if not self.buf:
-                    self.recording = False
+                n = 0
+                while self.recording:
+                    self.lock.acquire()
+                    if not self.buf:
+                        self.recording = False
+                        break
+
+                    i = self.buf.pop(0)
+                    current_time = i[2]
+
+                    # 检查是否需要切换到下一个切片
+                    if current_time - self.segment_start_time >= self.segment_duration:
+                        out.release()
+                        timestamp_file.close()
+                        self.current_segment += 1
+                        self.segment_start_time = current_time
+                        segment_path = f'{self.path}/video_seg{self.current_segment:03d}.avi'
+                        out = cv2.VideoWriter(segment_path, self.save_codec, 30.0, self.res, isColor=not self.BW)
+                        timestamp_file = open(ufile(f'{self.path}/timestamps_seg{self.current_segment:03d}.csv'), 'a')
+                        timestamp_file.write('frame,timestamp,segment\n')
+                        n = 0
+
+                    if self.BW and i[1].shape[-1] == 3:
+                        img = cv2.cvtColor(i[1], cv2.COLOR_BGR2GRAY)
+                    else:
+                        img = i[1]
+                    out.write(img)
+                    timestamp_file.write(f'{n},{current_time},{self.current_segment}\n')
+                    n += 1
+
+                # 记录丢帧
+                with open(ufile(f'{self.path}/missed_frames.csv'), 'a') as f:
+                    f.write('timestamp\n')
+                    for i in self.missed_frames:
+                        f.write(f'{i}\n')
+            except Exception as e:
+                logger.error("摄像头录制异常: %s", e)
+            finally:
+                # 确保资源被释放
+                if out is not None:
                     out.release()
+                if timestamp_file is not None:
                     timestamp_file.close()
-                    break
-
-                i = self.buf.pop(0)
-                current_time = i[2]
-
-                # 检查是否需要切换到下一个切片
-                if current_time - self.segment_start_time >= self.segment_duration:
-                    out.release()
-                    timestamp_file.close()
-                    self.current_segment += 1
-                    self.segment_start_time = current_time
-                    segment_path = f'{self.path}/video_seg{self.current_segment:03d}.avi'
-                    out = cv2.VideoWriter(segment_path, self.save_codec, 30.0, self.res, isColor=not self.BW)
-                    timestamp_file = open(ufile(f'{self.path}/timestamps_seg{self.current_segment:03d}.csv'), 'a')
-                    timestamp_file.write('frame,timestamp,segment\n')
-                    n = 0
-
-                if self.BW and i[1].shape[-1] == 3:
-                    img = cv2.cvtColor(i[1], cv2.COLOR_BGR2GRAY)
-                else:
-                    img = i[1]
-                out.write(img)
-                timestamp_file.write(f'{n},{current_time},{self.current_segment}\n')
-                n += 1
-
-            # 记录丢帧
-            with open(ufile(f'{self.path}/missed_frames.csv'), 'a') as f:
-                f.write('timestamp\n')
-                for i in self.missed_frames:
-                    f.write(f'{i}\n')
 
         Thread(target=_record).start()
 
@@ -1933,8 +1946,9 @@ class SensorApp(tk.Tk):
         self.name_cam2 = f'{time.time()}'
 
         # 新增摄像头选择相关变量
-        self.cam_vars = {}  # 存储摄像头名称与Checkbutton变量的映射
-        self.selected_cams = [self.name_cam1, self.name_cam2]  # 当前选中的摄像头列表
+        self.cam_vars = {}
+        self.selected_cams = [self.name_cam1, self.name_cam2]
+        self._cached_cam_list = []  # 缓存摄像头列表，避免重复枚举
 
         # 视频录制参数
         self.cam_bitrate_mbps = tk.IntVar(value=5)
@@ -2014,8 +2028,8 @@ class SensorApp(tk.Tk):
     def update_camera_list_once(self):
         """启动时枚举一次摄像头"""
         try:
-            current_cams = [cam[1] for cam in list_video_devices()]
-            for cam_name in current_cams:
+            self._cached_cam_list = list_video_devices()  # 缓存结果
+            for cam_id, cam_name in self._cached_cam_list:
                 var = tk.IntVar(value=1 if cam_name in [self.name_cam1, self.name_cam2] else 0)
                 cb = ttk.Checkbutton(
                     self.children['!labelframe'],
@@ -2042,9 +2056,10 @@ class SensorApp(tk.Tk):
         
         t = self.selected_cams
         self.selected_cams = []
-        for i in [cam[1] for cam in list_video_devices()]:
-            if i in t:
-                self.selected_cams.append(i)
+        # 使用缓存的摄像头列表，不再重新枚举
+        for cam_id, cam_name_cached in self._cached_cam_list:
+            if cam_name_cached in t:
+                self.selected_cams.append(cam_name_cached)
         
         if len(self.selected_cams)>0:
             self.name_cam1 = self.selected_cams[0]
@@ -2124,8 +2139,8 @@ class SensorApp(tk.Tk):
             logger.error("Mindray监护仪初始化失败: %s", e)
 
         try:
-            # 摄像头
-            cams = list_video_devices()
+            # 摄像头 - 使用缓存列表
+            cams = self._cached_cam_list
             bitrate = self.cam_bitrate_mbps.get()
             segment_sec = int(self.cam_segment_minutes.get()) * 60
             for idx, (cam_id, cam_name) in enumerate(cams):
@@ -2432,8 +2447,8 @@ class SensorApp(tk.Tk):
                             self.devices["respiration"].record()
                             set_path()
 
-                # 摄像头检测
-                cams = list_video_devices()
+                # 摄像头检测 - 使用缓存列表，不重新枚举
+                cams = self._cached_cam_list
                 changed = False
                 if not (self.devices["nir_camera"] and self.devices["nir_camera"].alive) or not (self.devices["rgb_camera"] and self.devices['rgb_camera'].alive):
                     for idx, (cam_id, cam_name) in enumerate(cams):
