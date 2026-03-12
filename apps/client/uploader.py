@@ -54,6 +54,9 @@ def upload_one(base_url: str, path: str, rel: str, kind: str, device_id: str,
     headers = {"Connection": "close"}
     if api_key:
         headers["X-Api-Key"] = api_key
+    file_size = os.path.getsize(path)
+    # 按 200KB/s 最低速率估算，至少给 timeout 秒
+    read_timeout = max(timeout, int(file_size / (200 * 1024)) + 30)
     with open(path, "rb") as f:
         files = {"file": (os.path.basename(path), f)}
         data = {
@@ -61,7 +64,8 @@ def upload_one(base_url: str, path: str, rel: str, kind: str, device_id: str,
             "device_id": device_id,
             "relative_path": rel.replace("\\", "/"),
         }
-        resp = requests.post(url, data=data, files=files, headers=headers, timeout=timeout,
+        resp = requests.post(url, data=data, files=files, headers=headers,
+                              timeout=(10, read_timeout),
                               proxies={"http": None, "https": None})
     return resp.status_code == 200
 

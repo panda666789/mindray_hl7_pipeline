@@ -2823,13 +2823,15 @@ class SensorApp(tk.Tk):
                         skipped += 1
                         continue
                     kind = rel.split(os.sep, 1)[0]
+                    fsize_mb = os.path.getsize(path) / (1024 * 1024)
+                    logger.info("正在上传: %s (%.1f MB)", rel, fsize_mb)
                     try:
                         ok = upload_one(base_url, path, rel, kind, device_id, timeout, api_key)
                     except Exception as e:
-                        logger.error("上传异常 %s: %s", rel, e)
+                        logger.error("上传异常 %s (%.1f MB): %s", rel, fsize_mb, e)
                         ok = False
                     if ok:
-                        logger.info("已上传: %s", rel)
+                        logger.info("已上传: %s (%.1f MB)", rel, fsize_mb)
                         uploaded.append(rel)
                         manifest[rel_key] = mtime
                         save_manifest(data_dir, manifest)
