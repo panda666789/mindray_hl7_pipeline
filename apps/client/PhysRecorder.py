@@ -2001,8 +2001,8 @@ class SensorApp(tk.Tk):
         self.storage_label.pack(side=tk.LEFT, padx=10)
         self.update_storage_estimate()
 
-        # 定时更新摄像头列表
-        self.update_camera_list()
+        # 只在启动时枚举一次摄像头
+        self.update_camera_list_once()
         
     def update_storage_estimate(self, *args):
         """更新存储空间预估"""
@@ -2011,22 +2011,10 @@ class SensorApp(tk.Tk):
         storage_gb = Camera.estimate_storage(bitrate, 1, num_cameras=2)
         self.storage_label.config(text=f"预估1小时: {storage_gb:.1f} GB (双摄像头)")
 
-    def update_camera_list(self):
-        """更新摄像头列表并保持选择状态"""
+    def update_camera_list_once(self):
+        """启动时枚举一次摄像头"""
         try:
-            # 获取当前摄像头列表
             current_cams = [cam[1] for cam in list_video_devices()]
-            # 如果列表没有变化则跳过
-            if set(current_cams) == set(self.cam_vars.keys()):
-                self.after(5000, self.update_camera_list)
-                return
-                
-            # 清除旧组件
-            for widget in self.children['!labelframe'].winfo_children():
-                widget.destroy()
-            
-            # 创建新的Checkbutton
-            self.cam_vars.clear()
             for cam_name in current_cams:
                 var = tk.IntVar(value=1 if cam_name in [self.name_cam1, self.name_cam2] else 0)
                 cb = ttk.Checkbutton(
@@ -2037,12 +2025,9 @@ class SensorApp(tk.Tk):
                 )
                 cb.pack(side=tk.LEFT, padx=5)
                 self.cam_vars[cam_name] = var
-                
         except Exception as e:
-            logger.warning("更新摄像头列表失败: %s", e)
-        finally:
-            self.after(5000, self.update_camera_list)  # 改成5秒，避免频繁枚举
-        
+            logger.warning("枚举摄像头失败: %s", e)
+
     def on_cam_select(self, cam_name, var):
         """处理摄像头选择事件"""
         if var.get() == 1:  # 选中
