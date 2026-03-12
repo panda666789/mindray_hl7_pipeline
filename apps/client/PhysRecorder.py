@@ -1942,6 +1942,34 @@ class SensorApp(tk.Tk):
 
         if _HAS_SV_TTK:
             sv_ttk.set_theme("light")
+
+        # 创建可滚动容器
+        self._scroll_canvas = tk.Canvas(self, highlightthickness=0)
+        self._scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self._scroll_canvas.yview)
+        self._scroll_frame = ttk.Frame(self._scroll_canvas)
+
+        self._scroll_frame.bind(
+            "<Configure>",
+            lambda e: self._scroll_canvas.configure(scrollregion=self._scroll_canvas.bbox("all"))
+        )
+        self._scroll_canvas_window = self._scroll_canvas.create_window(
+            (0, 0), window=self._scroll_frame, anchor="nw"
+        )
+        self._scroll_canvas.configure(yscrollcommand=self._scrollbar.set)
+
+        self._scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._scroll_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # 让内部 frame 宽度跟随 canvas
+        def _on_canvas_configure(event):
+            self._scroll_canvas.itemconfig(self._scroll_canvas_window, width=event.width)
+        self._scroll_canvas.bind("<Configure>", _on_canvas_configure)
+
+        # 鼠标滚轮绑定
+        def _on_mousewheel(event):
+            self._scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self.bind_all("<MouseWheel>", _on_mousewheel)
+
         self.name_cam1 = f'{time.time()}'
         self.name_cam2 = f'{time.time()}'
 
@@ -1990,8 +2018,9 @@ class SensorApp(tk.Tk):
     def create_camera_selector(self):
         """创建摄像头选择组件"""
         # 在设备状态栏上方添加摄像头选择框
-        camera_frame = ttk.LabelFrame(self, text="摄像头选择")
+        camera_frame = ttk.LabelFrame(self._scroll_frame, text="摄像头选择")
         camera_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+        self._camera_frame = camera_frame
 
         # 视频码率设置
         settings_frame = ttk.Frame(camera_frame)
@@ -2032,7 +2061,7 @@ class SensorApp(tk.Tk):
             for cam_id, cam_name in self._cached_cam_list:
                 var = tk.IntVar(value=1 if cam_name in [self.name_cam1, self.name_cam2] else 0)
                 cb = ttk.Checkbutton(
-                    self.children['!labelframe'],
+                    self._camera_frame,
                     text=cam_name,
                     variable=var,
                     command=lambda n=cam_name, v=var: self.on_cam_select(n, v)
@@ -2155,7 +2184,7 @@ class SensorApp(tk.Tk):
 
     def create_widgets(self):
         
-        ring_frame = ttk.LabelFrame(self, text="指环设备")
+        ring_frame = ttk.LabelFrame(self._scroll_frame, text="指环设备")
         ring_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
         
         ttk.Label(ring_frame, text="Ring1 MAC:").grid(row=0, column=0, padx=5)
@@ -2170,7 +2199,7 @@ class SensorApp(tk.Tk):
         ring_frame.columnconfigure(3, weight=1)
 
         # Mindray监护仪配置
-        mindray_frame = ttk.LabelFrame(self, text="Mindray监护仪")
+        mindray_frame = ttk.LabelFrame(self._scroll_frame, text="Mindray监护仪")
         mindray_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
 
         ttk.Label(mindray_frame, text="监听端口:").grid(row=0, column=0, padx=5)
@@ -2184,7 +2213,7 @@ class SensorApp(tk.Tk):
         self.mindray_preview_btn.grid(row=0, column=2, padx=10)
 
         """创建界面组件"""
-        main_frame = ttk.Frame(self)
+        main_frame = ttk.Frame(self._scroll_frame)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # 设备状态指示
@@ -2764,7 +2793,16 @@ class SensorApp(tk.Tk):
             device_id = cfg.get('device_id', '')
             data_dir = 'data'
 
-            logger.info("开始上传，目标: %s", base_url)
+            logger.info("开始上传，目标: %s, 数据目录: %s", base_url, os.path.abspath(data_dir))
+
+            if not os.path.isdir(data_dir):
+                msg = f"数据目录不存在: {os.path.abspath(data_dir)}"
+                logger.warning(msg)
+                self.after(0, lambda m=msg: messagebox.showwarning("上传", m))
+                self._uploading = False
+                self.after(0, lambda: self.btn_upload.config(text="上传数据"))
+                return
+
             manifest = load_manifest(data_dir)
             uploaded = []
             failed = []
@@ -2785,7 +2823,11 @@ class SensorApp(tk.Tk):
                         skipped += 1
                         continue
                     kind = rel.split(os.sep, 1)[0]
-                    ok = upload_one(base_url, path, rel, kind, device_id, timeout, api_key)
+                    try:
+                        ok = upload_one(base_url, path, rel, kind, device_id, timeout, api_key)
+                    except Exception as e:
+                        logger.error("上传异常 %s: %s", rel, e)
+                        ok = False
                     if ok:
                         logger.info("已上传: %s", rel)
                         uploaded.append(rel)
@@ -2797,6 +2839,7 @@ class SensorApp(tk.Tk):
                             except OSError:
                                 pass
                     else:
+                        logger.warning("上传失败: %s", rel)
                         failed.append(rel)
                 # 一轮扫描完成，显示结果弹窗
                 if uploaded or failed:
