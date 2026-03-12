@@ -1134,21 +1134,17 @@ def list_video_devices():
     import cv2
     cameras = []
 
-    # 在 Windows 上尝试前 10 个摄像头索引
+    # 在 Windows 上尝试前 10 个摄像头索引（不提前终止）
     for i in range(10):
         cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)  # Windows 使用 DirectShow
         if cap.isOpened():
-            # 尝试获取摄像头名称（Windows 上可能不可用）
+            # 尝试获取摄像头名称
             backend = cap.getBackendName()
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             cam_name = f"Camera {i} ({backend} {width}x{height})"
             cameras.append((i, cam_name))
             cap.release()
-        else:
-            # 如果连续 3 个索引都打不开，停止搜索
-            if i > 0 and len(cameras) > 0 and i - cameras[-1][0] > 2:
-                break
 
     return cameras
 
