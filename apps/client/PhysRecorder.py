@@ -1144,6 +1144,9 @@ def list_video_devices():
             cam_name = f"Camera {i} (MSMF {width}x{height})"
             cameras.append((i, cam_name))
             cap.release()
+        elif len(cameras) > 0 and i - cameras[-1][0] > 2:
+            # 找到摄像头后，如果连续 3 个索引失败就停止
+            break
 
     # 如果 MSMF 没找到，回退到 DSHOW
     if not cameras:
@@ -1156,6 +1159,8 @@ def list_video_devices():
                 cam_name = f"Camera {i} (DSHOW {width}x{height})"
                 cameras.append((i, cam_name))
                 cap.release()
+            elif len(cameras) > 0 and i - cameras[-1][0] > 2:
+                break
 
     return cameras
 
@@ -2013,6 +2018,7 @@ class SensorApp(tk.Tk):
             current_cams = [cam[1] for cam in list_video_devices()]
             # 如果列表没有变化则跳过
             if set(current_cams) == set(self.cam_vars.keys()):
+                self.after(5000, self.update_camera_list)
                 return
                 
             # 清除旧组件
@@ -2035,7 +2041,7 @@ class SensorApp(tk.Tk):
         except Exception as e:
             logger.warning("更新摄像头列表失败: %s", e)
         finally:
-            self.after(200, self.update_camera_list)
+            self.after(5000, self.update_camera_list)  # 改成5秒，避免频繁枚举
         
     def on_cam_select(self, cam_name, var):
         """处理摄像头选择事件"""
