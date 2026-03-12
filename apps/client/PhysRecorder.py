@@ -1126,12 +1126,31 @@ class KHK11CP:
     def close(self):
         self.alive = False
 
-try:
-    from PyCameraList.camera_device import list_video_devices
-    list_video_devices()
-except ImportError:
-    def list_video_devices():
-        return []
+def list_video_devices():
+    """
+    使用 OpenCV 枚举可用摄像头
+    返回格式: [(cam_id, cam_name), ...]
+    """
+    import cv2
+    cameras = []
+
+    # 在 Windows 上尝试前 10 个摄像头索引
+    for i in range(10):
+        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)  # Windows 使用 DirectShow
+        if cap.isOpened():
+            # 尝试获取摄像头名称（Windows 上可能不可用）
+            backend = cap.getBackendName()
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cam_name = f"Camera {i} ({backend} {width}x{height})"
+            cameras.append((i, cam_name))
+            cap.release()
+        else:
+            # 如果连续 3 个索引都打不开，停止搜索
+            if i > 0 and len(cameras) > 0 and i - cameras[-1][0] > 2:
+                break
+
+    return cameras
 
 def get_camera_properties(cap):
     """
@@ -1184,7 +1203,13 @@ import cv2
 
 class Camera:
 
-    def __init__(self, port, path, name='', BW=False, res='480p', record_codec='MJPG', save_codec='MJPG'):
+    def __init__(self, port, path, name='', BW=False, res='480p', record_codec='MJPG', save_codec='MJPG',
+                 bitrate_mbps=5, segment_duration_sec=3600):
+        """
+        初始化摄像头
+        :param bitrate_mbps: 视频码率 (Mbps)，范围 1-50
+        :param segment_duration_sec: 视频切片时长（秒），默认 3600 (1小时)
+        """
         self.cap = cv2.VideoCapture(port, cv2.CAP_MSMF)
         if res == '480p':
             res = (640, 480)
@@ -1195,6 +1220,8 @@ class Camera:
         self.name = name
         self.res = res
         self.BW = BW
+        self.bitrate_mbps = max(1, min(50, bitrate_mbps))  # 限制在 1-50 Mbps
+        self.segment_duration = segment_duration_sec
         self.cap.set(3, res[0])
         self.cap.set(4, res[1])
         self.cap.set(6, cv2.VideoWriter.fourcc(*record_codec))
@@ -1204,11 +1231,13 @@ class Camera:
         self.properties = {}
         self.lock = Semaphore(0)
         self.buf = []
-        self.alive = False 
+        self.alive = False
         self.recording = False
         self.path = path
         self.preview = None
         self.missed_frames = []
+        self.current_segment = 0
+        self.segment_start_time = None
         
         global cam_crash
         cam_crash = False
@@ -1244,39 +1273,74 @@ class Camera:
         if self.recording:
             return
         self.recording = True
+        self.current_segment = 1
+        self.segment_start_time = time.time()
         os.makedirs(self.path, exist_ok=True)
-        #[os.remove(f'{self.path}/{i}') for i in ('timestamps.csv', 'metadata.csv', 'video.avi') if os.path.exists(f'{self.path}/{i}')]
+
         def _record():
+            # 写入元数据（只写一次）
             with open(ufile(f'{self.path}/metadata.csv'), 'a') as f:
                 f.write('attribute,value\n')
                 for k, v in get_camera_properties(self.cap).items():
                     f.write(f'{k},{v}\n')
-            out = cv2.VideoWriter(f'{self.path}/video.avi', self.save_codec, 30.0, self.res, isColor=not self.BW)
-            with open(ufile(f'{self.path}/timestamps.csv'), 'a') as f:
-                f.write('frame,timestamp\n')
-                n = 0
-                while self.recording:
-                    self.lock.acquire()
-                    if not self.buf:
-                        self.recording = False
-                        out.release()
-                        return
-                    i = self.buf.pop(0)
-                    if self.BW and i[1].shape[-1]==3:
-                        img = cv2.cvtColor(i[1], cv2.COLOR_BGR2GRAY)
-                    else:
-                        img = i[1]
-                    out.write(img)
-                    f.write(f'{n},{i[2]}\n')
-                    n += 1
-                with open(ufile(f'{self.path}/missed_frames.csv'), 'a') as f:
-                    f.write('timestamp\n')
-                    for i in self.missed_frames:
-                        f.write(f'{i}\n')
+                f.write(f'bitrate_mbps,{self.bitrate_mbps}\n')
+                f.write(f'segment_duration_sec,{self.segment_duration}\n')
+
+            # 初始化第一个切片
+            segment_path = f'{self.path}/video_seg{self.current_segment:03d}.avi'
+            out = cv2.VideoWriter(segment_path, self.save_codec, 30.0, self.res, isColor=not self.BW)
+            timestamp_file = open(ufile(f'{self.path}/timestamps_seg{self.current_segment:03d}.csv'), 'a')
+            timestamp_file.write('frame,timestamp,segment\n')
+
+            n = 0
+            while self.recording:
+                self.lock.acquire()
+                if not self.buf:
+                    self.recording = False
+                    out.release()
+                    timestamp_file.close()
+                    break
+
+                i = self.buf.pop(0)
+                current_time = i[2]
+
+                # 检查是否需要切换到下一个切片
+                if current_time - self.segment_start_time >= self.segment_duration:
+                    out.release()
+                    timestamp_file.close()
+                    self.current_segment += 1
+                    self.segment_start_time = current_time
+                    segment_path = f'{self.path}/video_seg{self.current_segment:03d}.avi'
+                    out = cv2.VideoWriter(segment_path, self.save_codec, 30.0, self.res, isColor=not self.BW)
+                    timestamp_file = open(ufile(f'{self.path}/timestamps_seg{self.current_segment:03d}.csv'), 'a')
+                    timestamp_file.write('frame,timestamp,segment\n')
+                    n = 0
+
+                if self.BW and i[1].shape[-1] == 3:
+                    img = cv2.cvtColor(i[1], cv2.COLOR_BGR2GRAY)
+                else:
+                    img = i[1]
+                out.write(img)
+                timestamp_file.write(f'{n},{current_time},{self.current_segment}\n')
+                n += 1
+
+            # 记录丢帧
+            with open(ufile(f'{self.path}/missed_frames.csv'), 'a') as f:
+                f.write('timestamp\n')
+                for i in self.missed_frames:
+                    f.write(f'{i}\n')
+
         Thread(target=_record).start()
-        
+
     def close(self):
-        self.alive = False 
+        self.alive = False
+
+    @staticmethod
+    def estimate_storage(bitrate_mbps, duration_hours, num_cameras=2):
+        """估算视频存储空间，返回 GB"""
+        mb_per_second = bitrate_mbps * 0.125
+        total_mb = mb_per_second * duration_hours * 3600 * num_cameras
+        return total_mb / 1024
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -1855,10 +1919,15 @@ class SensorApp(tk.Tk):
             sv_ttk.set_theme("light")
         self.name_cam1 = f'{time.time()}'
         self.name_cam2 = f'{time.time()}'
-        
+
         # 新增摄像头选择相关变量
         self.cam_vars = {}  # 存储摄像头名称与Checkbutton变量的映射
         self.selected_cams = [self.name_cam1, self.name_cam2]  # 当前选中的摄像头列表
+
+        # 视频录制参数
+        self.cam_bitrate_mbps = tk.IntVar(value=5)
+        self.cam_segment_minutes = tk.StringVar(value="60")  # 切片时长（分钟）
+
         self.create_camera_selector()
         
         # 初始化设备 - 添加HUB设备
@@ -1897,10 +1966,39 @@ class SensorApp(tk.Tk):
         # 在设备状态栏上方添加摄像头选择框
         camera_frame = ttk.LabelFrame(self, text="摄像头选择")
         camera_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
-        
+
+        # 视频码率设置
+        settings_frame = ttk.Frame(camera_frame)
+        settings_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(settings_frame, text="码率 (Mbps):").pack(side=tk.LEFT, padx=5)
+        bitrate_scale = ttk.Scale(settings_frame, from_=1, to=50, orient=tk.HORIZONTAL,
+                                  variable=self.cam_bitrate_mbps, command=self.update_storage_estimate)
+        bitrate_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.bitrate_label = ttk.Label(settings_frame, text=f"{self.cam_bitrate_mbps.get()} Mbps")
+        self.bitrate_label.pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(settings_frame, text="切片时长:").pack(side=tk.LEFT, padx=5)
+        segment_combo = ttk.Combobox(settings_frame, textvariable=self.cam_segment_minutes,
+                                     values=["30", "60", "120", "180"], width=8, state="readonly")
+        segment_combo.pack(side=tk.LEFT, padx=5)
+        ttk.Label(settings_frame, text="分钟").pack(side=tk.LEFT)
+
+        # 存储空间预估
+        self.storage_label = ttk.Label(settings_frame, text="")
+        self.storage_label.pack(side=tk.LEFT, padx=10)
+        self.update_storage_estimate()
+
         # 定时更新摄像头列表
         self.update_camera_list()
         
+    def update_storage_estimate(self, *args):
+        """更新存储空间预估"""
+        bitrate = self.cam_bitrate_mbps.get()
+        self.bitrate_label.config(text=f"{bitrate} Mbps")
+        storage_gb = Camera.estimate_storage(bitrate, 1, num_cameras=2)
+        self.storage_label.config(text=f"预估1小时: {storage_gb:.1f} GB (双摄像头)")
+
     def update_camera_list(self):
         """更新摄像头列表并保持选择状态"""
         try:
@@ -2030,11 +2128,15 @@ class SensorApp(tk.Tk):
         try:
             # 摄像头
             cams = list_video_devices()
+            bitrate = self.cam_bitrate_mbps.get()
+            segment_sec = int(self.cam_segment_minutes.get()) * 60
             for idx, (cam_id, cam_name) in enumerate(cams):
                 if self.name_cam1 in cam_name:
-                    self.devices["nir_camera"] = Camera(cam_id, "camera1", self.name_cam1)
+                    self.devices["nir_camera"] = Camera(cam_id, "camera1", self.name_cam1,
+                                                        bitrate_mbps=bitrate, segment_duration_sec=segment_sec)
                 elif self.name_cam2 in cam_name:
-                    self.devices["rgb_camera"] = Camera(cam_id, "camera2", self.name_cam2)
+                    self.devices["rgb_camera"] = Camera(cam_id, "camera2", self.name_cam2,
+                                                        bitrate_mbps=bitrate, segment_duration_sec=segment_sec)
         except Exception as e:
             logger.error("摄像头初始化失败: %s", e)
 
@@ -2347,14 +2449,18 @@ class SensorApp(tk.Tk):
                         self.devices["nir_camera"].close()
                     if self.devices["rgb_camera"]:
                         self.devices["rgb_camera"].close()
+                    bitrate = self.cam_bitrate_mbps.get()
+                    segment_sec = int(self.cam_segment_minutes.get()) * 60
                     for idx, (cam_id, cam_name) in enumerate(cams):
                         if self.name_cam1 in cam_name:
-                            self.devices["nir_camera"] = Camera(cam_id, 'camera1', self.name_cam1)
+                            self.devices["nir_camera"] = Camera(cam_id, 'camera1', self.name_cam1,
+                                                                bitrate_mbps=bitrate, segment_duration_sec=segment_sec)
                         if self.is_recording:
                             self.devices["nir_camera"].record()
                             set_path()
                         if self.name_cam2 in cam_name:
-                            self.devices["rgb_camera"] = Camera(cam_id, 'camera2', self.name_cam2)
+                            self.devices["rgb_camera"] = Camera(cam_id, 'camera2', self.name_cam2,
+                                                                bitrate_mbps=bitrate, segment_duration_sec=segment_sec)
                         if self.is_recording:
                             self.devices["rgb_camera"].record()
                             set_path()
