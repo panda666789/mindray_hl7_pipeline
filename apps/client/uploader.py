@@ -55,8 +55,8 @@ def upload_one(base_url: str, path: str, rel: str, kind: str, device_id: str,
     if api_key:
         headers["X-Api-Key"] = api_key
     file_size = os.path.getsize(path)
-    # 按 50KB/s 最低速率估算，至少给 timeout 秒
-    read_timeout = max(timeout, int(file_size / (50 * 1024)) + 60)
+    # 按 30KB/s 最低速率估算（适配低带宽云服务器），至少给 timeout 秒
+    read_timeout = max(timeout, int(file_size / (30 * 1024)) + 60)
     with open(path, "rb") as f:
         files = {"file": (os.path.basename(path), f)}
         data = {
