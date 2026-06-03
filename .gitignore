@@ -1,11 +1,8 @@
 .DS_Store
+.idea/
 __pycache__/
 *.pyc
 data/
 .venv/
 *.egg-info/
-apps/server/
-apps/dashboard/
-docs/
-tools/
 logs/
