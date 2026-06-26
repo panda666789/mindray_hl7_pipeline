@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul 2>&1
-title Mindray HL7 Pipeline - 安装程序
+title Mindray HL7 Pipeline - HL7采集端安装程序
 
 echo ============================================
-echo   Mindray HL7 数据采集系统 - 安装程序
+echo   Mindray HL7 数据采集系统 - HL7采集端安装程序
 echo ============================================
 echo.
 
@@ -29,16 +29,11 @@ popd
 
 echo [信息] 项目目录: %PROJECT_DIR%
 
-:: 安装依赖
+:: 本地采集不需要第三方依赖
 echo.
-echo [安装] 正在安装 Python 依赖...
-pip install -r "%PROJECT_DIR%\requirements.txt" --quiet
-if errorlevel 1 (
-    echo [错误] 依赖安装失败
-    pause
-    exit /b 1
-)
-echo [OK] 依赖安装完成
+echo [信息] 本地 HL7 采集不需要安装第三方 Python 依赖
+echo [提示] 如果以后要测试上传，请联网后手动运行:
+echo        pip install -r "%PROJECT_DIR%\apps\client\requirements.txt"
 
 :: 创建必要目录
 echo.
@@ -61,14 +56,14 @@ if errorlevel 1 (
 :: 创建桌面快捷方式
 echo.
 set "DESKTOP=%USERPROFILE%\Desktop"
-set "SHORTCUT=%DESKTOP%\PhysRecorder.bat"
+set "SHORTCUT=%DESKTOP%\MindrayHL7Collector.bat"
 if not exist "%SHORTCUT%" (
     echo @echo off > "%SHORTCUT%"
-    echo title PhysRecorder >> "%SHORTCUT%"
+    echo title Mindray HL7 Collector >> "%SHORTCUT%"
     echo cd /d "%PROJECT_DIR%" >> "%SHORTCUT%"
-    echo python apps\client\PhysRecorder.py >> "%SHORTCUT%"
+    echo call deploy\run_collector.bat >> "%SHORTCUT%"
     echo pause >> "%SHORTCUT%"
-    echo [OK] 桌面快捷方式已创建: PhysRecorder.bat
+    echo [OK] 桌面快捷方式已创建: MindrayHL7Collector.bat
 ) else (
     echo [跳过] 桌面快捷方式已存在
 )
@@ -76,6 +71,6 @@ if not exist "%SHORTCUT%" (
 echo.
 echo ============================================
 echo   [OK] Install complete!
-echo   Double-click PhysRecorder.bat on Desktop
+echo   Double-click MindrayHL7Collector.bat on Desktop
 echo ============================================
 pause

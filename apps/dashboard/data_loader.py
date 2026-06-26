@@ -74,6 +74,7 @@ _KNOWN_FILES = {
     "bvp.csv", "spo2.csv", "hr.csv",                       # PulseOximeter
     "resp.csv",                                             # KHK11CP
     "video.avi", "metadata.csv", "timestamps.csv",          # Camera
+    "video_seg001.avi", "timestamps_seg001.csv",            # Segmented camera
 }
 
 
@@ -328,16 +329,29 @@ def load_camera_data(session_path: str) -> List[Dict]:
             continue
         sub_path = os.path.join(session_path, subdir)
         meta = _safe_read_csv(os.path.join(sub_path, "metadata.csv"))
-        ts = _safe_read_csv(os.path.join(sub_path, "timestamps.csv"))
-        video = os.path.join(sub_path, "video.avi")
+        ts_files = _find_files_pattern(sub_path, "timestamps_seg*.csv")
+        legacy_ts = os.path.join(sub_path, "timestamps.csv")
+        if os.path.exists(legacy_ts):
+            ts_files = [legacy_ts] + ts_files
+        ts_parts = [_safe_read_csv(p) for p in ts_files]
+        ts_parts = [df for df in ts_parts if df is not None]
+        ts = pd.concat(ts_parts, ignore_index=True) if ts_parts else None
+
+        video_files = _find_files_pattern(sub_path, "video_seg*.avi")
+        legacy_video = os.path.join(sub_path, "video.avi")
+        if os.path.exists(legacy_video):
+            video_files = [legacy_video] + video_files
+        video = video_files[0] if video_files else legacy_video
         has_video = os.path.exists(video)
         if meta is not None or ts is not None or has_video:
             results.append({
                 "name": subdir,
                 "metadata": meta,
                 "timestamps": ts,
+                "video_files": video_files,
                 "video_path": video if has_video else None,
-                "video_size_mb": round(os.path.getsize(video) / 1048576, 1) if has_video else 0,
+                "video_size_mb": round(sum(os.path.getsize(p) for p in video_files) / 1048576, 1)
+                if video_files else 0,
             })
     return results
 

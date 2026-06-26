@@ -1,7 +1,10 @@
-# 示例数据包（生成说明）
+# 示例数据包（内部参考）
 
-出于隐私/合规考虑，本仓库不直接存真实监护仪数据。  
-需要样例时，请在**云端**运行脚本自动抽取：
+本目录保留给项目内部格式参考。这里的样例可能包含设备号、病区/床位、采集时间等现场元数据，即使没有姓名/病历号，也应按敏感数据处理。
+
+给医院方打包交付时，使用 `tools/package_for_hospital.sh`，该脚本会自动排除 `docs/sample_data/`。
+
+如需更新样例，请在**云端**运行脚本自动抽取：
 
 ```
 bash mindray_hl7_pipeline/tools/extract_samples.sh
@@ -13,8 +16,8 @@ bash mindray_hl7_pipeline/tools/extract_samples.sh
 - `events_sample.csv`
 
 说明：
-- `raw_hl7_sample.hl7` 已提供一份真实报文样例（来自现场抓包，已脱敏到设备级别）。
-- `waveform_sample.csv` / `events_sample.csv` 已提供最小可用样例（用于格式对齐/解析验证）。
-- 如需更新为最新样本，请在云端运行脚本重新生成。
+- `raw_hl7_sample.hl7` 是现场报文格式样例，可能包含设备号、病区/床位和采集时间等元数据。
+- `waveform_sample.csv` / `events_sample.csv` 是最小可用样例，用于格式对齐/解析验证。
+- 如需更新为最新样本，请在云端运行脚本重新生成，并确认是否允许分发。
 
-注意：这些样本仍可能包含真实设备信息，请谨慎传播。
+注意：不要把本目录随交付包发出，除非医院方明确允许。

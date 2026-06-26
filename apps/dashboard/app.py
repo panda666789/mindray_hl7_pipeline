@@ -459,10 +459,15 @@ if camera_data:
 
             if cam["timestamps"] is not None and len(cam["timestamps"]) > 1:
                 ts_df = cam["timestamps"].copy()
-                ts_df["interval"] = ts_df["timestamp"].diff()
+                interval_col = "video_timestamp" if "video_timestamp" in ts_df.columns else "timestamp"
+                ts_df["interval"] = ts_df[interval_col].diff()
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=ts_df["frame"], y=ts_df["interval"] * 1000,
-                                          mode="lines", name="帧间隔", line=dict(width=1)))
+                                          mode="lines", name="视频时间间隔", line=dict(width=1)))
+                if "capture_timestamp" in ts_df.columns:
+                    ts_df["capture_interval"] = ts_df["capture_timestamp"].diff()
+                    fig.add_trace(go.Scatter(x=ts_df["frame"], y=ts_df["capture_interval"] * 1000,
+                                              mode="lines", name="采集到达间隔", line=dict(width=1)))
                 fig.update_layout(title=f"{cam['name']} — 帧间隔", xaxis_title="帧号",
                                   yaxis_title="间隔 (ms)", height=250,
                                   margin=dict(l=60, r=20, t=40, b=40))

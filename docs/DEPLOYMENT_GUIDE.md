@@ -8,6 +8,7 @@
 如果你只想快速跑通，直接看第 3 节和第 5 节。
 
 接手必读（更短）：`docs/HANDOVER.md`
+医院 Windows 现场快速上手：`docs/WINDOWS_HOSPITAL_QUICKSTART.md`
 
 ---
 
@@ -20,16 +21,22 @@
 - 监听监护仪发来的 HL7 数据（TCP + MLLP）
 - 一边回 ACK 保持数据不断流
 - 一边把数据落盘（CSV + 原始 HL7）
-- 再把文件上传到云服务器
+- 当前试运行以本地落盘为准
 
-2) 云服务器（服务端 / 接收端）
+2) 云服务器（服务端 / 接收端，可选）
 - 提供一个 HTTP 接口（`POST /upload`）
 - 接收客户端上传的文件
 - 存到云服务器磁盘上
+- 由于现场带宽和文件体积限制，当前不推荐作为试运行主流程
+- 如果未来启用上传，应先确认医院数据合规要求，并补齐 HTTPS/VPN/API Key、文件大小限制和留存策略
 
 一句话总结链路：
 
-监护仪 -> 客户端监听(6600) -> 本地落盘 -> 上传 -> 云端服务(10000) -> 云端落盘
+监护仪 -> 客户端监听(6600) -> 本地落盘
+
+可选链路：
+
+本地文件 -> 上传 -> 云端服务(10000) -> 云端落盘
 
 ---
 
@@ -78,14 +85,14 @@
 
 `collector.py` 默认开启 ACK（`enable_ack: true`）。
 
-### 3.4 我们选择“落盘为主，上传为辅”
+### 3.4 我们选择“本地落盘为主，上传默认关闭”
 
 策略是：
 
 1) 先可靠落盘（CSV + 原始 HL7）
-2) 再异步上传
+2) 当前不自动上传，避免受带宽和文件体积影响导致现场试运行变慢
 
-这样即使断网，也不会丢数据。
+这样即使断网，也不会影响本地数据采集。后续如果确实需要云端汇总，再单独评估网络、存储和合规要求。
 
 ---
 
@@ -95,10 +102,11 @@
 
 1) 医院现场电脑（Windows）
 - 能接监护仪网线
-- 能出网访问云服务器
+- 能运行 Python。若只做本地采集，不要求能访问云服务器
 
-2) 云服务器（Linux）
-- 能对外提供一个端口（我们用 10000）
+2) 云服务器（Linux，可选）
+- 只有测试上传时才需要
+- 能对外提供一个端口（默认 10000）
 
 ### 4.2 必须确认的参数（已知值）
 
@@ -108,7 +116,7 @@
 - 子网掩码：`255.255.255.192`（/26）
 - 网关：`10.60.117.193`
 - HL7 端口（监护仪侧配置）：`6600`
-- 云端服务端口（我们改成）：`10000`
+- 云端服务端口（可选上传使用）：`10000`
 
 建议采集机 IP（同网段即可）：
 
@@ -167,7 +175,7 @@ netsh advfirewall firewall add rule name="Mindray-HL7-6600" dir=in action=allow 
 python --version
 ```
 
-建议 Python 3.9+（3.10/3.11 都可以）。
+建议 Python 3.9 或更高版本（现场优先用 3.9、3.10、3.11 这类常见版本）。
 
 ### 5.5 放置项目代码
 
@@ -177,16 +185,17 @@ python --version
 
 后续所有路径以这个为准。
 
-### 5.6 安装依赖（客户端）
-
-```powershell
-cd C:\mindray_hl7_pipeline
-pip install -r .\apps\client\requirements.txt
-```
+### 5.6 依赖说明（客户端）
 
 说明：
 - `collector.py` 本身只用标准库
-- 但如果你要上传，需要 `requests`
+- 本地采集不依赖第三方包
+- `apps\client\requirements.txt` 只包含可选上传器需要的 `requests`，只有测试上传时才需要安装：
+  ```powershell
+  cd C:\mindray_hl7_pipeline
+  pip install -r .\apps\client\requirements.txt
+  ```
+- 如果要运行 GUI 多设备程序，再安装项目根目录 `requirements.txt`
 
 ### 5.7 修改客户端配置（最重要）
 
@@ -201,7 +210,7 @@ pip install -r .\apps\client\requirements.txt
   "data_dir": "data",
   "enable_ack": true,
   "upload": {
-    "enabled": true,
+    "enabled": false,
     "base_url": "http://<你的云服务器IP>:10000",
     "delete_after_upload": false,
     "min_age_seconds": 120,
@@ -212,8 +221,9 @@ pip install -r .\apps\client\requirements.txt
 
 关键解释：
 - `listen_port` 必须和监护仪填的一致（6600）
-- `base_url` 必须写云服务器地址和端口（10000）
-- `enabled` 不开就不会上传
+- `enable_ack` 必须开启，否则监护仪可能发一小段后停止
+- `upload.enabled` 当前保持 `false`，先只做本地落盘
+- `base_url` 只有手动测试上传时才需要填写
 
 ### 5.8 启动采集端（开始收数）
 
@@ -228,7 +238,6 @@ python .\apps\client\collector.py --config .\configs\client_config.json
 
 - Listening on 0.0.0.0:6600
 - Connected from (10.60.117.196, xxxx)
-- Uploader thread started（如果开启上传）
 
 ### 5.9 如何判断“真的收到数据了”
 
@@ -246,6 +255,7 @@ Get-ChildItem .\data -Recurse | Sort-Object LastWriteTime -Descending | Select-O
 
 - `data\raw_hl7\...`
 - `data\waveform_csv\...`
+- `data\numerics_csv\...`
 - `data\events_csv\...`
 
 ### 5.10 如何停止
@@ -254,9 +264,13 @@ Get-ChildItem .\data -Recurse | Sort-Object LastWriteTime -Descending | Select-O
 
 - `Ctrl + C`
 
+如果提示是否终止批处理，输入 `Y` 后回车。
+
 ---
 
-## 6. 云服务器部署（一步一步照做）
+## 6. 云服务器部署（可选）
+
+当前医院现场试运行不推荐使用自动上传；只有在明确要测试云端接收时，才需要本节。
 
 以下示例以 Linux 为主（Ubuntu/CentOS 都类似）。
 
@@ -278,7 +292,7 @@ Get-ChildItem .\data -Recurse | Sort-Object LastWriteTime -Descending | Select-O
 cd /opt/mindray_hl7_pipeline
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r server/requirements.txt
+pip install -r apps/server/requirements.txt
 ```
 
 ### 6.4 启动服务端（10000 端口）
@@ -319,7 +333,7 @@ curl http://127.0.0.1:10000/health
 - Content-Type: `multipart/form-data`
 
 表单字段：
-- `kind`: `raw_hl7` / `waveform_csv` / `events_csv`
+- `kind`: `raw_hl7` / `waveform_csv` / `numerics_csv` / `events_csv`
 - `device_id`: 可选
 - `relative_path`: 建议传（保留目录结构）
 - `file`: 文件本体
@@ -378,6 +392,8 @@ curl http://127.0.0.1:10000/health
 
 这是“真相来源”，建议长期保留，便于追溯。
 
+但原始 HL7 可能包含设备号、病区/床位、采集时间等敏感信息。是否长期保留、保留多久、能否对外复制，应由医院方或项目负责人确认。
+
 ---
 
 ## 9. 常见问题排查（出问题就照着对）
@@ -409,9 +425,11 @@ curl http://127.0.0.1:10000/health
 Get-NetTCPConnection -LocalPort 6600 -State Listen
 ```
 
-### 9.3 本地有数据但没上传
+### 9.3 上传没有发生
 
-检查：
+这是当前推荐状态。`configs/client_config.json` 默认 `upload.enabled=false`。
+
+如果确实要手动测试上传，再检查：
 
 1) `upload.enabled` 是否为 `true`
 2) `base_url` 是否写成了 `http://<server-ip>:10000`
@@ -420,12 +438,14 @@ Get-NetTCPConnection -LocalPort 6600 -State Listen
 
 ### 9.4 上传慢 or 看起来没动静
 
-这是设计如此：
+当前不推荐使用自动上传。原因是：
 
-- 上传器会跳过“刚写过的文件”
-- 只有超过 `min_age_seconds`（默认 120 秒）才上传
+- 原始 HL7 和波形 CSV 体积较大
+- 医院现场到云端带宽可能有限
+- 即使程序正常，上传也可能非常慢
+- 跨网传输可能触发医院数据安全/合规要求
 
-这是为了避免上传到一半文件还在写。
+如果只是验证监护仪接入，请看本地 `data/` 是否持续增长，不要用云端上传作为主要验收标准。
 
 ---
 
@@ -439,9 +459,9 @@ Get-NetTCPConnection -LocalPort 6600 -State Listen
 同时必须：
 - 监护仪上也改成同一个端口
 
-### 10.2 改云端端口
+### 10.2 改云端端口（可选上传）
 
-你现在用的是 10000。
+默认云端端口是 10000，仅手动测试上传时需要。
 
 如果要改：
 
@@ -462,52 +482,54 @@ Get-NetTCPConnection -LocalPort 6600 -State Listen
 
 ## 11. 一份“最小可用部署清单”（照抄就能跑）
 
-### 11.1 云服务器
+### 11.1 医院采集机（推荐主流程）
 
-```bash
-cd /opt/mindray_hl7_pipeline
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r server/requirements.txt
-cd server
-DATA_DIR=/opt/mindray_hl7_pipeline/data uvicorn app:app --host 0.0.0.0 --port 10000
-```
-
-### 11.2 医院采集机
+管理员 PowerShell：
 
 ```powershell
 netsh interface ipv4 add address "以太网 2" 10.60.117.200 255.255.255.192
 netsh advfirewall firewall add rule name="Mindray-HL7-6600" dir=in action=allow protocol=TCP localport=6600
+```
 
+普通 PowerShell：
+
+```powershell
 cd C:\mindray_hl7_pipeline
-pip install -r .\apps\client\requirements.txt
-python .\apps\client\collector.py --config .\configs\client_config.json
+deploy\install.bat
+deploy\run_collector.bat
 ```
 
 并确保：
 - 监护仪 HL7 服务器地址 = `10.60.117.200`
 - 监护仪 HL7 端口 = `6600`
-- `client_config.json` 中 `upload.enabled = true`
-- `base_url = http://<云服务器IP>:10000`
+- `client_config.json` 中 `upload.enabled = false`
+- 先确认本地 `data/` 有文件持续增长
+
+### 11.2 云服务器（可选上传）
+
+只有在医院方确认允许上传、且已配置 HTTPS/VPN/API Key 等访问控制后，再使用本节。
+
+```bash
+cd /opt/mindray_hl7_pipeline
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r apps/server/requirements.txt
+cd apps/server
+DATA_DIR=/opt/mindray_hl7_pipeline/data uvicorn app:app --host 0.0.0.0 --port 10000
+```
 
 ---
 
-## 12. 你接下来最应该做的两件事（强烈建议）
+## 12. 交付前最应该做的两件事
 
-1) 我可以继续帮你补两样东西：
-- Windows 开机自启动（或服务化）
-- Linux systemd 常驻服务（云端）
+1) 在医院 Windows 电脑上跑一次本地采集验收：
+- 采集端启动
+- 监护仪连入
+- 本地 `data/` 出现并持续增长
 
-2) 跑一次真实链路验收：
-- 云端先启动
-- 采集端再启动
-- 看云端 `data/` 是否出现文件
-
-如果你愿意，我下一步就直接把：
-- `systemd` 服务文件
-- Windows 自启动脚本
-- 验收 checklist
-一次性补齐。
+2) 如果要长期后台运行，再配置 Windows 计划任务：
+- 先手工运行 `deploy\run_collector.bat` 确认正常
+- 再按第 14 节创建计划任务
 
 ---
 
@@ -569,7 +591,9 @@ Get-ChildItem .\data -Recurse | Sort-Object LastWriteTime -Descending | Select-O
 
 ---
 
-### 13.2 恢复/启动流程（云端接收端）
+### 13.2 恢复/启动流程（云端接收端，可选）
+
+当前试运行不推荐用云端上传验收。只有手动测试上传时才需要本节。
 
 **步骤 A：启动服务**
 ```bash
@@ -605,7 +629,7 @@ ls -la /opt/mindray_hl7_pipeline/data
 2. **采集端 IP 丢失**：重启后静态 IP 被清掉
 3. **监护仪配置被改**：服务器 IP/端口不一致
 4. **防火墙阻断 6600**：采集端监听不到连接
-5. **云端端口未放行 10000**：上传失败
+5. **云端端口未放行 10000**：仅影响可选上传，不影响本地采集
 
 ---
 
@@ -616,39 +640,29 @@ ls -la /opt/mindray_hl7_pipeline/data
 1) 采集机 IP = 10.60.117.200/26  
 2) 监护仪 HL7 = 客户端模式 + 服务器 IP/端口正确  
 3) 采集端程序运行中（监听 6600）  
-4) 云端 10000 端口对外开放  
+4) `enable_ack=true`
 
 ---
 
 ## 14. 后台部署/服务化（当前实际部署方式）
 
 > 下面是“稳定后台运行”的标准做法。  
-> 医院采集端用**计划任务 + 自动重启脚本**，云端用 **systemd**。
+> 医院采集端用 **Windows 计划任务 + deploy\run_collector.bat**。云端 systemd 只在测试上传时需要。
 
 ### 14.1 医院采集端（Windows）
 
-**A. 生成自动重启脚本（带日志）**
+**A. 先确认手工启动正常**
 ```powershell
-New-Item -ItemType Directory E:\mindray_hl7_pipeline\logs -Force | Out-Null
-
-@'
-@echo off
-set PY=C:\ProgramData\miniconda3\python.exe
-set ROOT=E:\mindray_hl7_pipeline
-cd /d %ROOT%
-:loop
-"%PY%" "%ROOT%\apps\client\collector.py" --config "%ROOT%\configs\client_config.json" >> "%ROOT%\logs\collector.log" 2>>&1
-timeout /t 5 >nul
-goto loop
-'@ | Set-Content E:\mindray_hl7_pipeline\apps\client\run_collector_loop.cmd -Encoding ASCII
+cd C:\mindray_hl7_pipeline
+deploy\run_collector.bat
 ```
-> 如果 Python 路径不同，用 `where python` 或 `python -V` 确认后替换 `PY=...`。
 
 **B. 创建计划任务（登录后自动运行）**
 ```powershell
-SCHTASKS /Create /TN "MindrayHL7Collector" /TR "E:\mindray_hl7_pipeline\apps\client\run_collector_loop.cmd" /SC ONLOGON /RU "desktop-0mald86\wl" /RL HIGHEST /F /IT
+whoami
+SCHTASKS /Create /TN "MindrayHL7Collector" /TR "C:\mindray_hl7_pipeline\deploy\run_collector.bat" /SC ONLOGON /RU "<上一步输出的账号>" /RL HIGHEST /F /IT
 ```
-> 把用户名换成 `whoami` 的输出。
+> 把 `<上一步输出的账号>` 替换为 `whoami` 显示的完整账号，例如 `HOSPITAL-PC\user`。
 
 **C. 立即启动**
 ```powershell
@@ -657,7 +671,7 @@ SCHTASKS /Run /TN "MindrayHL7Collector"
 
 **D. 查看日志**
 ```powershell
-Get-Content E:\mindray_hl7_pipeline\logs\collector.log -Tail 50
+Get-Content C:\mindray_hl7_pipeline\logs\collector.log -Tail 50
 ```
 
 **说明**
@@ -700,21 +714,25 @@ journalctl -u mindray-hl7 -f
 
 ---
 
-## 15. 上传数据验收（确认数据真的来自监护仪）
+## 15. 本地数据验收（确认数据真的来自监护仪）
 
-> 目标：确认上传到云端的数据结构正确、内容合理、确实是监护仪波形/事件。
+> 目标：确认 Windows 本地落盘的数据结构正确、内容合理、确实是监护仪波形/事件。
+> 验收数据可能包含敏感信息，只在医院授权范围内查看和传递。
 
-### 15.1 云端检查（推荐）
+### 15.1 Windows 本地检查（推荐）
 
-**A. 看是否有文件进入云端**
-```bash
-ls -la /opt/mindray_hl7_pipeline/data
+**A. 看是否有文件进入本地 data 目录**
+```powershell
+cd C:\mindray_hl7_pipeline
+Get-ChildItem .\data -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 10 FullName,Length,LastWriteTime
 ```
-预期：出现 `raw_hl7/`、`waveform_csv/`、`events_csv/` 目录。
+预期：出现 `raw_hl7/`、`waveform_csv/` 目录；`numerics_csv/` 在有生命体征数值报文时出现，`events_csv/` 在有报警/事件时出现。
 
 **B. 抽查原始 HL7（确认 MSH/OBX）**
-```bash
-zcat /opt/mindray_hl7_pipeline/data/raw_hl7/*/*/*/*/*.hl7.gz | head -n 20
+```powershell
+Get-ChildItem .\data\raw_hl7 -Recurse -File | Where-Object { $_.Name -like '*.hl7' -or $_.Name -like '*.hl7.gz' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object {
+  python -c "import gzip,sys; p=sys.argv[1]; opener=gzip.open if p.endswith('.gz') else open; print(opener(p, 'rt', encoding='utf-8', errors='replace').read(2000))" $_.FullName
+}
 ```
 预期能看到：
 - `MSH|...|MINDRAY_...`
@@ -722,24 +740,22 @@ zcat /opt/mindray_hl7_pipeline/data/raw_hl7/*/*/*/*/*.hl7.gz | head -n 20
 - `OBX|...|MDC_ECG_ELEC_POTL_*` 等
 
 **C. 抽查波形 CSV**
-```bash
-zcat /opt/mindray_hl7_pipeline/data/waveform_csv/*/*/*/*/*.csv.gz | head -n 5
+```powershell
+Get-ChildItem .\data\waveform_csv -Recurse -File | Where-Object { $_.Name -like '*.csv' -or $_.Name -like '*.csv.gz' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object {
+  python -c "import gzip,sys; p=sys.argv[1]; opener=gzip.open if p.endswith('.gz') else open; print(''.join(opener(p, 'rt', encoding='utf-8', errors='replace').readlines()[:5]))" $_.FullName
+}
 ```
 预期字段包含：
 `device_id, channel_code, sample_rate, resolution, samples`
 
 **D. 抽查事件 CSV**
-```bash
-zcat /opt/mindray_hl7_pipeline/data/events_csv/*/*/*/*/*.csv.gz | head -n 5
-```
-
-### 15.2 采集端本地检查（可选）
-
 ```powershell
-Get-ChildItem E:\mindray_hl7_pipeline\data -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 5 FullName,Length,LastWriteTime
+Get-ChildItem .\data\events_csv -Recurse -File | Where-Object { $_.Name -like '*.csv' -or $_.Name -like '*.csv.gz' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object {
+  python -c "import gzip,sys; p=sys.argv[1]; opener=gzip.open if p.endswith('.gz') else open; print(''.join(opener(p, 'rt', encoding='utf-8', errors='replace').readlines()[:5]))" $_.FullName
+}
 ```
 
-### 15.3 重点验证点（最关键）
+### 15.2 重点验证点（最关键）
 
 1) `device_id` 是你现场看到的 `00A037000000`  
 2) ECG 采样率 `500 Hz`  
@@ -748,4 +764,4 @@ Get-ChildItem E:\mindray_hl7_pipeline\data -Recurse | Sort-Object LastWriteTime 
 5) HL7 报文里 `MSH` 发送端为 `MINDRAY`  
 
 只要这些都满足，就可以确定：  
-**上传的数据确实来自监护仪，且被正确接收。**
+**本地落盘的数据确实来自监护仪，且被正确接收。**

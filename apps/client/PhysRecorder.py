@@ -20,6 +20,7 @@ import socket
 import json
 import re
 import datetime as dt
+import queue
 from log_config import setup_logger
 logger = setup_logger("physrecorder")
 
@@ -41,6 +42,8 @@ from hl7_parser import (
     parse_obs_id, decode_mllp_frames, build_ack,
     process_oru_r01, process_oru_r40,
 )
+from camera_capture import camera_roles_from_selection, camera_timestamp_row
+from upload_config import validate_upload_enabled
 
 
 omni_devices = []
@@ -1238,11 +1241,12 @@ class Camera:
         self.BW = BW
         self.bitrate_mbps = max(1, min(50, bitrate_mbps))  # 限制在 1-50 Mbps
         self.segment_duration = segment_duration_sec
+        self.target_fps = 30.0
         self.cap.set(3, res[0])
         self.cap.set(4, res[1])
         self.cap.set(6, cv2.VideoWriter.fourcc(*record_codec))
         self.save_codec = cv2.VideoWriter.fourcc(*save_codec)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_FPS, self.target_fps)
         self.properties = get_camera_properties(self.cap)
         self.properties = {}
         self.lock = Semaphore(0)
@@ -1291,6 +1295,10 @@ class Camera:
         self.recording = True
         self.current_segment = 1
         self.segment_start_time = time.time()
+        self.missed_frames = []
+        self.buf.clear()
+        while self.lock.acquire(blocking=False):
+            pass
         os.makedirs(self.path, exist_ok=True)
 
         def _record():
@@ -1307,9 +1315,9 @@ class Camera:
 
                 # 初始化第一个切片
                 segment_path = f'{self.path}/video_seg{self.current_segment:03d}.avi'
-                out = cv2.VideoWriter(segment_path, self.save_codec, 30.0, self.res, isColor=not self.BW)
+                out = cv2.VideoWriter(segment_path, self.save_codec, self.target_fps, self.res, isColor=not self.BW)
                 timestamp_file = open(ufile(f'{self.path}/timestamps_seg{self.current_segment:03d}.csv'), 'a')
-                timestamp_file.write('frame,timestamp,segment\n')
+                timestamp_file.write('frame,timestamp,capture_timestamp,video_timestamp,segment\n')
 
                 n = 0
                 while self.recording:
@@ -1320,6 +1328,8 @@ class Camera:
 
                     i = self.buf.pop(0)
                     current_time = i[2]
+                    if n == 0:
+                        self.segment_start_time = current_time
 
                     # 检查是否需要切换到下一个切片
                     if current_time - self.segment_start_time >= self.segment_duration:
@@ -1328,9 +1338,9 @@ class Camera:
                         self.current_segment += 1
                         self.segment_start_time = current_time
                         segment_path = f'{self.path}/video_seg{self.current_segment:03d}.avi'
-                        out = cv2.VideoWriter(segment_path, self.save_codec, 30.0, self.res, isColor=not self.BW)
+                        out = cv2.VideoWriter(segment_path, self.save_codec, self.target_fps, self.res, isColor=not self.BW)
                         timestamp_file = open(ufile(f'{self.path}/timestamps_seg{self.current_segment:03d}.csv'), 'a')
-                        timestamp_file.write('frame,timestamp,segment\n')
+                        timestamp_file.write('frame,timestamp,capture_timestamp,video_timestamp,segment\n')
                         n = 0
 
                     if self.BW and i[1].shape[-1] == 3:
@@ -1338,7 +1348,17 @@ class Camera:
                     else:
                         img = i[1]
                     out.write(img)
-                    timestamp_file.write(f'{n},{current_time},{self.current_segment}\n')
+                    row = camera_timestamp_row(
+                        frame_index=n,
+                        capture_timestamp=current_time,
+                        segment_start_timestamp=self.segment_start_time,
+                        segment=self.current_segment,
+                        fps=self.target_fps,
+                    )
+                    timestamp_file.write(
+                        f'{row["frame"]},{row["timestamp"]},{row["capture_timestamp"]},'
+                        f'{row["video_timestamp"]},{row["segment"]}\n'
+                    )
                     n += 1
 
                 # 记录丢帧
@@ -1970,17 +1990,32 @@ class SensorApp(tk.Tk):
             self._scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         self.bind_all("<MouseWheel>", _on_mousewheel)
 
-        self.name_cam1 = f'{time.time()}'
-        self.name_cam2 = f'{time.time()}'
+        self.name_cam1 = ''
+        self.name_cam2 = ''
 
         # 新增摄像头选择相关变量
         self.cam_vars = {}
-        self.selected_cams = [self.name_cam1, self.name_cam2]
+        self.selected_cams = []
         self._cached_cam_list = []  # 缓存摄像头列表，避免重复枚举
+        self._camera_checkbuttons = []
+        self._camera_scan_in_progress = False
+        self._camera_connecting = set()
+        self._camera_connect_lock = threading.Lock()
+        self._camera_result_queue = queue.Queue()
+        self._device_init_queue = queue.Queue()
+        self._device_init_started = False
+        self._device_reconnect_in_progress = False
+        self._device_reconnect_lock = threading.Lock()
 
         # 视频录制参数
         self.cam_bitrate_mbps = tk.IntVar(value=5)
         self.cam_segment_minutes = tk.StringVar(value="60")  # 切片时长（分钟）
+
+        # 状态跟踪
+        self.is_recording = False
+        self.scheduled_stop = None
+        self.start_time = 0
+        self.device_check_interval = 2000  # 2秒设备检测
 
         self.create_camera_selector()
         
@@ -1998,21 +2033,16 @@ class SensorApp(tk.Tk):
             "HUB": None,
             "mindray": None,
         }
-        self.initialize_devices()
-        
         # 创建UI组件
         self.create_widgets()
-        
-        # 状态跟踪
-        self.is_recording = False
-        self.scheduled_stop = None
-        self.start_time = 0
-        self.device_check_interval = 2000  # 2秒设备检测
+        self.start_device_initialization()
         
         # 启动循环任务
         self.update_device_status()
         self.update_previews()
-        self.on_cam_select('', type('', (), {'get': lambda x: 0})())
+        self.process_device_init_results()
+        self.process_camera_results()
+        self.request_camera_connections()
         self.after(self.device_check_interval, self.check_devices_status)
         
     def create_camera_selector(self):
@@ -2044,35 +2074,94 @@ class SensorApp(tk.Tk):
         self.storage_label.pack(side=tk.LEFT, padx=10)
         self.update_storage_estimate()
 
-        # 只在启动时枚举一次摄像头
+        camera_actions = ttk.Frame(camera_frame)
+        camera_actions.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        self.camera_scan_label = ttk.Label(camera_actions, text="摄像头：等待扫描")
+        self.camera_scan_label.pack(side=tk.LEFT, padx=5)
+        self.camera_refresh_btn = ttk.Button(
+            camera_actions, text="刷新摄像头", command=self.update_camera_list_once
+        )
+        self.camera_refresh_btn.pack(side=tk.LEFT, padx=5)
+
+        # 启动时后台枚举一次摄像头
         self.update_camera_list_once()
         
     def update_storage_estimate(self, *args):
         """更新存储空间预估"""
         bitrate = self.cam_bitrate_mbps.get()
         self.bitrate_label.config(text=f"{bitrate} Mbps")
-        storage_gb = Camera.estimate_storage(bitrate, 1, num_cameras=2)
-        self.storage_label.config(text=f"预估1小时: {storage_gb:.1f} GB (双摄像头)")
+        camera_count = len(self.selected_cams) or 1
+        storage_gb = Camera.estimate_storage(bitrate, 1, num_cameras=camera_count)
+        self.storage_label.config(text=f"预估1小时: {storage_gb:.1f} GB ({camera_count}路摄像头)")
 
     def update_camera_list_once(self):
-        """启动时枚举一次摄像头"""
-        try:
-            self._cached_cam_list = list_video_devices()  # 缓存结果
-            for cam_id, cam_name in self._cached_cam_list:
-                var = tk.IntVar(value=1 if cam_name in [self.name_cam1, self.name_cam2] else 0)
-                cb = ttk.Checkbutton(
-                    self._camera_frame,
-                    text=cam_name,
-                    variable=var,
-                    command=lambda n=cam_name, v=var: self.on_cam_select(n, v)
-                )
-                cb.pack(side=tk.LEFT, padx=5)
-                self.cam_vars[cam_name] = var
-        except Exception as e:
-            logger.warning("枚举摄像头失败: %s", e)
+        """后台枚举摄像头，避免阻塞 Tk 主线程。"""
+        if getattr(self, "is_recording", False):
+            messagebox.showwarning("录制中", "录制中不能刷新摄像头")
+            return
+        if self._camera_scan_in_progress:
+            return
+
+        self._camera_scan_in_progress = True
+        self.camera_scan_label.config(text="摄像头：正在扫描...")
+        self.camera_refresh_btn.config(state=tk.DISABLED)
+
+        def _scan():
+            try:
+                cameras = list_video_devices()
+                error = None
+            except Exception as e:
+                cameras = []
+                error = e
+            self._camera_result_queue.put(("scan", cameras, error))
+
+        Thread(target=_scan, daemon=True).start()
+
+    def _apply_camera_scan_result(self, cameras, error=None):
+        """Apply camera scan results on the Tk thread."""
+        self._camera_scan_in_progress = False
+        self.camera_refresh_btn.config(state=tk.NORMAL)
+
+        if error:
+            logger.warning("枚举摄像头失败: %s", error)
+            self.camera_scan_label.config(text="摄像头：扫描失败")
+            return
+
+        self._cached_cam_list = cameras
+        available_names = {name for _, name in cameras}
+        self.selected_cams = [name for name in self.selected_cams if name in available_names][:2]
+        if not self.selected_cams:
+            self.selected_cams = [name for _, name in cameras[:2]]
+        self._sync_camera_names_from_selection()
+
+        for cb in self._camera_checkbuttons:
+            cb.destroy()
+        self._camera_checkbuttons.clear()
+        self.cam_vars.clear()
+
+        for cam_id, cam_name in cameras:
+            var = tk.IntVar(value=1 if cam_name in self.selected_cams else 0)
+            cb = ttk.Checkbutton(
+                self._camera_frame,
+                text=cam_name,
+                variable=var,
+                command=lambda n=cam_name, v=var: self.on_cam_select(n, v),
+            )
+            cb.pack(side=tk.LEFT, padx=5)
+            self.cam_vars[cam_name] = var
+            self._camera_checkbuttons.append(cb)
+
+        self.camera_scan_label.config(text=f"摄像头：找到 {len(cameras)} 个")
+        self.update_storage_estimate()
+        self.request_camera_connections()
 
     def on_cam_select(self, cam_name, var):
         """处理摄像头选择事件"""
+        if getattr(self, "is_recording", False):
+            var.set(1 if cam_name in self.selected_cams else 0)
+            messagebox.showwarning("录制中", "录制中不能切换摄像头")
+            return
+
         if var.get() == 1:  # 选中
             if cam_name not in self.selected_cams:
                 if len(self.selected_cams) >= 2:
@@ -2082,36 +2171,179 @@ class SensorApp(tk.Tk):
         else:  # 取消选中
             if cam_name in self.selected_cams:
                 self.selected_cams.remove(cam_name)
+
+        available_names = {name for _, name in self._cached_cam_list}
+        self.selected_cams = [name for name in self.selected_cams if name in available_names][:2]
+        self._sync_camera_names_from_selection()
+
+        targets = self._selected_camera_roles()
+        for role in ["nir_camera", "rgb_camera"]:
+            dev = self.devices.get(role)
+            target = targets.get(role)
+            if dev and (not target or dev.name != target[1]):
+                dev.close()
+                self.devices[role] = None
+
+        self.update_storage_estimate()
+        self.request_camera_connections()
+
+    def _sync_camera_names_from_selection(self):
+        self.name_cam1 = self.selected_cams[0] if len(self.selected_cams) > 0 else ''
+        self.name_cam2 = self.selected_cams[1] if len(self.selected_cams) > 1 else ''
+
+    def _selected_camera_roles(self):
+        return camera_roles_from_selection(self._cached_cam_list, self.selected_cams)
+
+    def _camera_record_path(self, role):
+        folder = "Camera1" if role == "nir_camera" else "Camera2"
+        try:
+            base_path = os.path.join('data', self.subject_id.get(), self.video_num.get())
+        except AttributeError:
+            base_path = ""
+        return os.path.join(base_path, folder) if base_path else folder
+
+    def request_camera_connections(self):
+        """Start missing selected cameras in background threads."""
+        if not hasattr(self, "devices"):
+            return
+        if getattr(self, "is_recording", False):
+            return
+
+        targets = self._selected_camera_roles()
+        for role, (cam_id, cam_name) in targets.items():
+            current = self.devices.get(role)
+            if current and current.alive and current.name == cam_name:
+                continue
+
+            with self._camera_connect_lock:
+                if role in self._camera_connecting:
+                    continue
+                self._camera_connecting.add(role)
+
+            bitrate = self.cam_bitrate_mbps.get()
+            segment_sec = int(self.cam_segment_minutes.get()) * 60
+            Thread(
+                target=self._connect_camera_worker,
+                args=(role, cam_id, cam_name, bitrate, segment_sec),
+                daemon=True,
+            ).start()
+
+    def _connect_camera_worker(self, role, cam_id, cam_name, bitrate, segment_sec):
+        """Open a camera away from the Tk thread and publish it when ready."""
+        camera = None
+        try:
+            path = "camera1" if role == "nir_camera" else "camera2"
+            camera = Camera(
+                cam_id,
+                path,
+                cam_name,
+                bitrate_mbps=bitrate,
+                segment_duration_sec=segment_sec,
+            )
+            self._camera_result_queue.put(("connect", role, cam_id, cam_name, camera, None))
+        except Exception as e:
+            if camera:
+                camera.close()
+            logger.error("摄像头%s初始化失败: %s", cam_name, e)
+            self._camera_result_queue.put(("connect", role, cam_id, cam_name, None, e))
+
+    def process_camera_results(self):
+        """Process background camera scan/connect results on the Tk thread."""
+        try:
+            while True:
+                item = self._camera_result_queue.get_nowait()
+                if item[0] == "scan":
+                    _, cameras, error = item
+                    self._apply_camera_scan_result(cameras, error)
+                elif item[0] == "connect":
+                    _, role, cam_id, cam_name, camera, error = item
+                    if error:
+                        self._clear_camera_connecting(role)
+                    else:
+                        self._finish_camera_connect(role, cam_id, cam_name, camera)
+        except queue.Empty:
+            pass
+        self.after(100, self.process_camera_results)
+
+    def _finish_camera_connect(self, role, cam_id, cam_name, camera):
+        targets = self._selected_camera_roles()
+        if targets.get(role) != (cam_id, cam_name):
+            camera.close()
+            self._clear_camera_connecting(role)
+            return
+
+        old = self.devices.get(role)
+        if old and old is not camera:
+            old.close()
+
+        self.devices[role] = camera
+        if self.is_recording:
+            camera.path = self._camera_record_path(role)
+            camera.record()
+
+        self._clear_camera_connecting(role)
+
+    def _clear_camera_connecting(self, role):
+        with self._camera_connect_lock:
+            self._camera_connecting.discard(role)
         
-        t = self.selected_cams
-        self.selected_cams = []
-        # 使用缓存的摄像头列表，不再重新枚举
-        for cam_id, cam_name_cached in self._cached_cam_list:
-            if cam_name_cached in t:
-                self.selected_cams.append(cam_name_cached)
-        
-        if len(self.selected_cams)>0:
-            self.name_cam1 = self.selected_cams[0]
-        if len(self.selected_cams)>1:
-            self.name_cam2 = self.selected_cams[1]
-        
-        if self.devices['nir_camera'] and self.devices["nir_camera"].alive and self.devices["nir_camera"].name not in self.selected_cams:
-            self.devices["nir_camera"].close()
-            self.name_cam1 = f'{time.time()}'
-            
-        if self.devices['rgb_camera'] and self.devices["rgb_camera"].alive and self.devices["rgb_camera"].name not in self.selected_cams:
-            self.devices["rgb_camera"].close()
-            self.name_cam2 = f'{time.time()}'
-        
-    def initialize_devices(self):
+    def start_device_initialization(self):
+        """后台初始化非摄像头设备，避免启动阶段阻塞界面。"""
+        if self._device_init_started:
+            return
+        self._device_init_started = True
+        mindray_port = 6600
+        try:
+            mindray_port = int(self.mindray_port_entry.get())
+        except (ValueError, AttributeError):
+            pass
+        Thread(target=self.initialize_devices, args=(mindray_port,), daemon=True).start()
+
+    def _publish_device_init(self, name, device=None, error=None):
+        self._device_init_queue.put((name, device, error))
+
+    def process_device_init_results(self):
+        try:
+            while True:
+                name, device, error = self._device_init_queue.get_nowait()
+                if name == "__reconnect_done__":
+                    with self._device_reconnect_lock:
+                        self._device_reconnect_in_progress = False
+                    continue
+                if error:
+                    logger.error("%s初始化失败: %s", name, error)
+                    continue
+                if device is not None:
+                    old = self.devices.get(name)
+                    if old and old is not device:
+                        old.close()
+                    self.devices[name] = device
+                    if self.is_recording:
+                        device.path = self._device_record_path(name)
+                        device.record()
+        except queue.Empty:
+            pass
+        self.after(100, self.process_device_init_results)
+
+    def _device_record_path(self, name):
+        if name == 'nir_camera':
+            folder = 'Camera1'
+        elif name == 'rgb_camera':
+            folder = 'Camera2'
+        else:
+            folder = name[0].upper() + name[1:]
+        base_path = os.path.join('data', self.subject_id.get(), self.video_num.get())
+        return os.path.join(base_path, folder)
+
+    def initialize_devices(self, mindray_port=6600):
         """初始化所有传感器设备"""
         try:
             # 血氧计
             ox_devs = find_oxmeters()
             if ox_devs:
-                self.devices["oximeter"] = PulseOximeter(ox_devs[0][2])
+                self._publish_device_init("oximeter", PulseOximeter(ox_devs[0][2]))
         except Exception as e:
-            logger.error("血氧计初始化失败: %s", e)
+            self._publish_device_init("血氧计", error=e)
             
         time.sleep(0.2)
 
@@ -2119,68 +2351,110 @@ class SensorApp(tk.Tk):
             # 呼吸带
             resp_devs = find_KHK11CP()
             if resp_devs:
-                self.devices["respiration"] = KHK11CP(resp_devs[0][1])
+                self._publish_device_init("respiration", KHK11CP(resp_devs[0][1]))
         except Exception as e:
-            logger.error("呼吸带初始化失败: %s", e)
+            self._publish_device_init("呼吸带", error=e)
 
         time.sleep(0.2)
         
         try:
             glasses_dev = find_glasses()
             if glasses_dev:
-                self.devices['glasses'] = Glasses(glasses_dev[0], name='glasses')
+                self._publish_device_init('glasses', Glasses(glasses_dev[0], name='glasses'))
         except Exception as e:
-            logger.error("智能眼镜初始化失败: %s", e)
+            self._publish_device_init("智能眼镜", error=e)
             
         time.sleep(0.2)
         
         try:
             omni_ring = find_omni_ring()
             if omni_ring:
-                self.devices['omniRing'] = OmniRing(omni_ring[0], name='omniRing')
+                self._publish_device_init('omniRing', OmniRing(omni_ring[0], name='omniRing'))
         except Exception as e:
-            logger.error("OmniRing初始化失败: %s", e)
+            self._publish_device_init("OmniRing", error=e)
         
         try:
             omni_ring_com = find_omni_ring_com()
             if omni_ring_com:
-                self.devices['omniRing(COM)'] = OmniRingCom(omni_ring_com[0], name='omniRingCom')
+                self._publish_device_init('omniRing(COM)', OmniRingCom(omni_ring_com[0], name='omniRingCom'))
         except Exception as e:
-            logger.error("OmniRingCOM初始化失败: %s", e)
+            self._publish_device_init("OmniRingCOM", error=e)
 
         try:
             # HUB设备
             hub_devs = find_HUB()
             if hub_devs:
-                self.devices["HUB"] = HUB(hub_devs[0], name='HUB')
+                self._publish_device_init("HUB", HUB(hub_devs[0], name='HUB'))
         except Exception as e:
-            logger.error("HUB设备初始化失败: %s", e)
+            self._publish_device_init("HUB设备", error=e)
 
         try:
             # Mindray监护仪
-            mindray_port = 6600
-            try:
-                mindray_port = int(self.mindray_port_entry.get())
-            except (ValueError, AttributeError):
-                pass
-            self.devices["mindray"] = MindrayHL7(port=mindray_port, name='MindrayHL7')
+            self._publish_device_init("mindray", MindrayHL7(port=mindray_port, name='MindrayHL7'))
         except Exception as e:
-            logger.error("Mindray监护仪初始化失败: %s", e)
+            self._publish_device_init("Mindray监护仪", error=e)
+
+    def request_device_reconnections(self, original_status):
+        """Reconnect missing non-camera devices away from the Tk thread."""
+        with self._device_reconnect_lock:
+            if self._device_reconnect_in_progress:
+                return
+            self._device_reconnect_in_progress = True
 
         try:
-            # 摄像头 - 使用缓存列表
-            cams = self._cached_cam_list
-            bitrate = self.cam_bitrate_mbps.get()
-            segment_sec = int(self.cam_segment_minutes.get()) * 60
-            for idx, (cam_id, cam_name) in enumerate(cams):
-                if self.name_cam1 in cam_name:
-                    self.devices["nir_camera"] = Camera(cam_id, "camera1", self.name_cam1,
-                                                        bitrate_mbps=bitrate, segment_duration_sec=segment_sec)
-                elif self.name_cam2 in cam_name:
-                    self.devices["rgb_camera"] = Camera(cam_id, "camera2", self.name_cam2,
-                                                        bitrate_mbps=bitrate, segment_duration_sec=segment_sec)
+            mindray_port = int(self.mindray_port_entry.get())
+        except (ValueError, AttributeError):
+            mindray_port = 6600
+
+        Thread(
+            target=self._device_reconnect_worker,
+            args=(original_status, mindray_port),
+            daemon=True,
+        ).start()
+
+    def _device_reconnect_worker(self, original_status, mindray_port):
+        try:
+            if not original_status.get("oximeter"):
+                ox_devs = find_oxmeters()
+                if ox_devs:
+                    self._publish_device_init("oximeter", PulseOximeter(ox_devs[0][2]))
+
+            if not original_status.get("respiration"):
+                resp_devs = find_KHK11CP()
+                if resp_devs:
+                    self._publish_device_init("respiration", KHK11CP(resp_devs[0][1]))
+
+            if not original_status.get("glasses"):
+                glasses_devs = find_glasses()
+                if glasses_devs:
+                    self._publish_device_init("glasses", Glasses(glasses_devs[0], name="glasses"))
+
+            if not original_status.get("omniRing"):
+                omni_rings = find_omni_ring()
+                if omni_rings:
+                    self._publish_device_init("omniRing", OmniRing(omni_rings[0], name="omniRing"))
+
+            if not original_status.get("omniRing(COM)"):
+                omni_ring_com = find_omni_ring_com()
+                if omni_ring_com:
+                    self._publish_device_init(
+                        "omniRing(COM)",
+                        OmniRingCom(omni_ring_com[0], name="omniRingCom"),
+                    )
+
+            if not original_status.get("HUB"):
+                hub_devs = find_HUB()
+                if hub_devs:
+                    self._publish_device_init("HUB", HUB(hub_devs[0], name="HUB"))
+
+            mindray = self.devices.get("mindray")
+            if mindray and not original_status.get("mindray"):
+                mindray.close()
+                self._publish_device_init("mindray", MindrayHL7(port=mindray_port, name="MindrayHL7"))
         except Exception as e:
-            logger.error("摄像头初始化失败: %s", e)
+            self._publish_device_init("设备重连", error=e)
+        finally:
+            self._device_init_queue.put(("__reconnect_done__", None, None))
 
     def create_widgets(self):
         
@@ -2443,125 +2717,10 @@ class SensorApp(tk.Tk):
             if self.is_recording and (original_status != {k: bool(v and v.alive) for k, v in self.devices.items()}):
                 messagebox.showwarning("设备变化", "警告：检测到设备连接变化")
             
-            if not self.is_recording or True: # 允许录制中重连
-                base_path = os.path.join(self.subject_id.get(), self.video_num.get())
-                
-                def set_path():
-                    for name, dev in self.devices.items():
-                        if dev and dev.alive:
-                            if name == 'nir_camera':
-                                name = 'Camera1'
-                            if name == 'rgb_camera':
-                                name = 'Camera2'
-                            dev.path = os.path.join(base_path, name[0].upper()+name[1:])
-                        
-                if not original_status["oximeter"]:
-                    if self.devices["oximeter"]:
-                        self.devices["oximeter"].close()
-                    ox_devs = find_oxmeters()
-                    if ox_devs:
-                        self.devices["oximeter"] = PulseOximeter(ox_devs[0][2])
-                        if self.is_recording:
-                            self.devices["oximeter"].record()
-                            set_path()
-
-                # 呼吸带检测
-                if not original_status["respiration"]:
-                    if self.devices["respiration"]:
-                        self.devices["respiration"].close()
-                    resp_devs = find_KHK11CP()
-                    if resp_devs:
-                        self.devices["respiration"] = KHK11CP(resp_devs[0][1])
-                        if self.is_recording:
-                            self.devices["respiration"].record()
-                            set_path()
-
-                # 摄像头检测 - 使用缓存列表，不重新枚举
-                cams = self._cached_cam_list
-                changed = False
-                if not (self.devices["nir_camera"] and self.devices["nir_camera"].alive) or not (self.devices["rgb_camera"] and self.devices['rgb_camera'].alive):
-                    for idx, (cam_id, cam_name) in enumerate(cams):
-                        if self.name_cam1 in cam_name and not (self.devices["nir_camera"] and self.devices["nir_camera"].alive):
-                            changed = True
-                        elif self.name_cam2 in cam_name and not (self.devices["rgb_camera"] and self.devices['rgb_camera'].alive):
-                            changed = True
-
-                if changed:
-                    if self.devices["nir_camera"]:
-                        self.devices["nir_camera"].close()
-                    if self.devices["rgb_camera"]:
-                        self.devices["rgb_camera"].close()
-                    bitrate = self.cam_bitrate_mbps.get()
-                    segment_sec = int(self.cam_segment_minutes.get()) * 60
-                    for idx, (cam_id, cam_name) in enumerate(cams):
-                        if self.name_cam1 in cam_name:
-                            self.devices["nir_camera"] = Camera(cam_id, 'camera1', self.name_cam1,
-                                                                bitrate_mbps=bitrate, segment_duration_sec=segment_sec)
-                        if self.is_recording:
-                            self.devices["nir_camera"].record()
-                            set_path()
-                        if self.name_cam2 in cam_name:
-                            self.devices["rgb_camera"] = Camera(cam_id, 'camera2', self.name_cam2,
-                                                                bitrate_mbps=bitrate, segment_duration_sec=segment_sec)
-                        if self.is_recording:
-                            self.devices["rgb_camera"].record()
-                            set_path()
-                
-                if not original_status["glasses"]:
-                    if self.devices["glasses"]:
-                        self.devices["glasses"].close()
-                    glasses_devs = find_glasses()
-                    if glasses_devs:
-                        self.devices["glasses"] = Glasses(glasses_devs[0], name='glasses')
-                        if self.is_recording:
-                            self.devices["glasses"].record()
-                            set_path()
-                
-                if not original_status["omniRing"]:
-                    if self.devices["omniRing"]:
-                        if not self.devices["omniRing"].connecting:
-                            self.devices["omniRing"].close()
-                            omni_rings = find_omni_ring()
-                            if omni_rings:
-                                self.devices["omniRing"] = OmniRing(omni_rings[0], name='omniRing')
-                                if self.is_recording:
-                                    self.devices["omniRing"].record()
-                                    set_path()
-                    else:
-                        omni_rings = find_omni_ring()
-                        if omni_rings:
-                            self.devices["omniRing"] = OmniRing(omni_rings[0], name='omniRing')
-                            if self.is_recording:
-                                self.devices["omniRing"].record()
-                                set_path()
-                
-                # HUB设备检测与重连
-                if not original_status["HUB"]:
-                    if self.devices["HUB"]:
-                        self.devices["HUB"].close()
-                    hub_devs = find_HUB()
-                    if hub_devs:
-                        self.devices["HUB"] = HUB(hub_devs[0], name='HUB')
-                        if self.is_recording:
-                            self.devices["HUB"].record()
-                            set_path()
-
-                # Mindray监护仪重连
-                if not original_status.get("mindray"):
-                    if self.devices["mindray"] and not self.devices["mindray"].alive:
-                        self.devices["mindray"].close()
-                        try:
-                            mindray_port = 6600
-                            try:
-                                mindray_port = int(self.mindray_port_entry.get())
-                            except (ValueError, AttributeError):
-                                pass
-                            self.devices["mindray"] = MindrayHL7(port=mindray_port, name='MindrayHL7')
-                            if self.is_recording:
-                                self.devices["mindray"].record()
-                                set_path()
-                        except Exception as e:
-                            logger.error("Mindray重连失败: %s", e)
+            if not self.is_recording:
+                # 摄像头连接可能被 Windows 驱动阻塞，统一交给后台线程处理。
+                self.request_camera_connections()
+                self.request_device_reconnections(original_status)
 
                 for ring_name in ['ring1', 'ring2']:
                     mac = getattr(self, f'{ring_name}_mac').get().strip()
@@ -2775,8 +2934,9 @@ class SensorApp(tk.Tk):
             cfg = json.load(f)
 
         upload_cfg = cfg.get('upload', {})
-        if not upload_cfg.get('base_url'):
-            messagebox.showerror("错误", "配置文件中 upload.base_url 为空")
+        ok, message = validate_upload_enabled(cfg)
+        if not ok:
+            messagebox.showerror("上传未启用", message)
             return
 
         self._uploading = True
