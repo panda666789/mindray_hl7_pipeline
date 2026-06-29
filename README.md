@@ -14,12 +14,11 @@
 - **configs**：配置文件（如 `client_config.json`）
 - **docs**：部署与验收文档
 - **deploy**：Windows 一键安装与启动脚本
-- **tests**：单元测试（38 个）
+- **tests**：HL7 解析、摄像头时间戳、上传配置和 Dashboard 数据加载测试
 
 完整部署文档（超详细）见：
-- 今日出差任务指引：[docs/ONSITE_TRIP_TASK_BRIEFING_20260626.md](docs/ONSITE_TRIP_TASK_BRIEFING_20260626.md)
-- 现场负责人全貌与细节：[docs/ONSITE_OPERATOR_BRIEFING.md](docs/ONSITE_OPERATOR_BRIEFING.md)
-- 现场照做版：[docs/WINDOWS_SITE_RUNBOOK.md](docs/WINDOWS_SITE_RUNBOOK.md)
+- 数据采集软件使用说明：[docs/DATA_COLLECTION_USER_GUIDE.md](docs/DATA_COLLECTION_USER_GUIDE.md)
+- Windows 现场操作手册：[docs/WINDOWS_SITE_RUNBOOK.md](docs/WINDOWS_SITE_RUNBOOK.md)
 - 医院 Windows 快速上手：[docs/WINDOWS_HOSPITAL_QUICKSTART.md](docs/WINDOWS_HOSPITAL_QUICKSTART.md)
 - [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md)
 - 接手要点（必读）：[docs/HANDOVER.md](docs/HANDOVER.md)
@@ -78,12 +77,14 @@ mindray_hl7_pipeline/
 │   ├── run_physrecorder.bat     # 启动 GUI（可选）
 │   └── verify_install.py        # 安装检查
 ├── tests/
-│   └── test_hl7_parser.py       # 单元测试（38个）
+│   ├── test_hl7_parser.py       # HL7 解析测试
+│   ├── test_camera_capture.py   # 摄像头时间戳测试
+│   ├── test_upload_config.py    # 上传配置保护测试
+│   └── test_dashboard_data_loader.py # Dashboard 数据加载测试
 ├── docs/
-│   ├── ONSITE_TRIP_TASK_BRIEFING_20260626.md # 今日出差任务指引
-│   ├── ONSITE_OPERATOR_BRIEFING.md # 现场负责人全貌与细节
+│   ├── DATA_COLLECTION_USER_GUIDE.md # 数据采集软件使用说明
 │   ├── WINDOWS_HOSPITAL_QUICKSTART.md # 医院 Windows 快速上手
-│   ├── WINDOWS_SITE_RUNBOOK.md # Windows 现场傻瓜式操作手册
+│   ├── WINDOWS_SITE_RUNBOOK.md # Windows 现场操作手册
 │   ├── DEPLOYMENT_GUIDE.md      # 完整部署手册
 │   └── HANDOVER.md              # 接手要点
 ├── logs/                        # 运行日志（自动创建）
@@ -336,7 +337,7 @@ python apps\client\uploader.py --config configs\client_config.json
 pytest tests/ -v
 ```
 
-覆盖 HL7 时间戳解析、单位映射、设备 ID 提取、MLLP 帧解码、ACK 构建、波形/数值参数/事件解析，共 38 个用例。
+覆盖 HL7 时间戳解析、单位映射、设备 ID 提取、MLLP 帧解码、ACK 构建、波形/数值参数/事件解析、摄像头时间戳、上传配置保护和 Dashboard 数据加载。
 
 ---
 

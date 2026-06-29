@@ -4,9 +4,15 @@ created: 2026-06-03
 related_to: DEPLOYMENT_GUIDE.md
 ---
 
-# 项目交接要点（必读版）
+# 项目交接要点
 
-本页只保留“能接手并继续运行”的必要信息。现场负责人需要理解全貌和控场逻辑时，先看 `docs/ONSITE_OPERATOR_BRIEFING.md`；医院现场从零操作请优先看 `docs/WINDOWS_SITE_RUNBOOK.md`。
+本页保留项目接手和运行所需的关键信息。
+
+阅读顺序建议：
+
+- 使用软件采集数据：先看 `docs/DATA_COLLECTION_USER_GUIDE.md`
+- Windows 现场连接迈瑞监护仪：先看 `docs/WINDOWS_SITE_RUNBOOK.md`
+- 项目实现和部署细节：看 `docs/DEPLOYMENT_GUIDE.md`
 
 ---
 
@@ -37,6 +43,8 @@ mindray_hl7_pipeline/
   configs/client_config.json    # 采集端配置
   deploy/install.bat            # Windows 最小采集端安装
   deploy/run_collector.bat      # Windows 采集端启动脚本
+  deploy/run_physrecorder.bat   # Windows GUI 多模态采集启动脚本
+  docs/DATA_COLLECTION_USER_GUIDE.md
   docs/ONSITE_OPERATOR_BRIEFING.md
   docs/WINDOWS_SITE_RUNBOOK.md
   docs/WINDOWS_HOSPITAL_QUICKSTART.md
@@ -130,6 +138,24 @@ waveform_csv: device_id, channel_code, start_time, end_time, sample_rate, resolu
 numerics_csv: device_id, timestamp, code, name, value, unit
 events_csv:   device_id, event_code, event_phase, alarm_state, priority, timestamp
 ```
+
+GUI 多模态采集的输出目录为：
+
+```
+data/<被试者ID>/<视频编号>/
+  Camera1/video_seg001.avi
+  Camera1/timestamps_seg001.csv
+  Camera2/video_seg001.avi
+  Camera2/timestamps_seg001.csv
+  Mindray/waveforms.csv
+  Mindray/vitals.csv
+  Mindray/events.csv
+```
+
+摄像头时间戳中：
+
+- `capture_timestamp` 是帧到达程序时的本机时间戳。
+- `video_timestamp` 是按 30 fps 生成的稳定视频时间轴，rPPG 图像-波形对齐建议优先使用它。
 
 ---
 

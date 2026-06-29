@@ -4,9 +4,9 @@ created: 2026-06-04
 related_to: WINDOWS_HOSPITAL_QUICKSTART.md
 ---
 
-# Windows 现场傻瓜式操作手册
+# Windows 现场操作手册
 
-这份文档给到医院现场的人使用。目标不是讲原理，而是让你按顺序操作，把 Windows 电脑和迈瑞监护仪接起来，并确认数据已经保存到本地。
+这份文档用于 Windows 现场部署和操作，目标是按步骤完成 Windows 电脑与迈瑞监护仪连接，并确认数据已保存到本地。
 
 如果你是现场负责人，需要先理解项目全貌、现场节奏、验收标准和故障定位逻辑，请先读 `docs\ONSITE_OPERATOR_BRIEFING.md`。
 
